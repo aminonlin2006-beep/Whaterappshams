@@ -363,16 +363,18 @@ object RadarAnalyzer {
         parsedCells.sortBy { it.centerDistKm }
         val topCells = parsedCells.take(5)
 
-        val firstArrival = topCells
+        val firstArrival = parsedCells
             .filter { it.state == CellApproachState.APPROACHING && it.maxDbz >= Tuning.DBZ_RAIN && it.etaMinLow != null }
             .minByOrNull { it.etaMinLow!! }
+
+        val shownCells = if (firstArrival != null && firstArrival !in topCells) listOf(firstArrival) + topCells.take(4) else topCells
 
         val statusText = buildString {
             when {
                 maxDbzTarget >= Tuning.DBZ_SEVERE -> append("رادار زنده: لکه بارشی شدیدی با قدرت $maxDbzTarget dBZ داخل دایره ۲۰km شمس‌آباد فعال است.")
                 maxDbzTarget >= Tuning.DBZ_RAIN -> append("رادار زنده: لکه بارشی با قدرت $maxDbzTarget dBZ داخل دایره ۲۰km شمس‌آباد رصد شد.")
                 firstArrival != null -> append("رادار زنده: توده بارشی ${firstArrival.maxDbz} dBZ در ${firstArrival.distKm.toInt()}km (${firstArrival.directionFa})، ورود محتمل بین ${firstArrival.etaMinLow} تا ${firstArrival.etaMinHigh} دقیقه دیگر.")
-                topCells.isNotEmpty() -> append("رادار زنده: ${topCells.size} توده بارشی خارج از دایره ۲۰km شمس‌آباد رصد شد.")
+                shownCells.isNotEmpty() -> append("رادار زنده: ${shownCells.size} توده بارشی خارج از دایره ۲۰km شمس‌آباد رصد شد.")
                 else -> append("رادار زنده: شعاع پایش ۲۰ کیلومتری شمس‌آباد پاک و بدون لکه بارشی است.")
             }
             if (clutterPixelsRemoved > 0) {
@@ -390,7 +392,7 @@ object RadarAnalyzer {
             maxDbzInTarget = maxDbzTarget,
             wetFractionInTarget = wetFractionTarget,
             rainRateInTargetMmH = meanRainRateTarget,
-            cells = topCells,
+            cells = shownCells,
             firstArrival = firstArrival,
             statusText = statusText,
             maxDbzNearPoint = maxDbzNearPoint,

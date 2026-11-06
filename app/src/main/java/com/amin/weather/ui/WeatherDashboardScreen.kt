@@ -1252,8 +1252,10 @@ private fun SynopObsCard(synop: SynopObs?, modelCurrent: ModelCurrent?) {
                         Text("رطوبت نسبی: ${JalaliCalendar.formatNumber(synop.rh)}٪", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
                     }
                     Column(horizontalAlignment = Alignment.End) {
-                        Text("بارش: ${JalaliCalendar.formatNumber(synop.precipMm ?: 0.0)} mm", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, color = SkyAccent)
-                        Text("دوره بارش: ${synop.precipPeriodH ?: 0} ساعته", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+                        val precipStr = synop.precipMm?.let { "${JalaliCalendar.formatNumber(it)} mm" } ?: "نامشخص"
+                        val periodStr = synop.precipPeriodH?.let { "در $it ساعت گذشته" } ?: "دوره نامشخص"
+                        Text("بارش: $precipStr", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, color = SkyAccent)
+                        Text("دوره: $periodStr", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
                     }
                 }
                 Spacer(modifier = Modifier.height(8.dp))

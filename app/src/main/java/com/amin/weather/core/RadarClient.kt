@@ -106,11 +106,12 @@ object RadarClient {
                 }
             }
 
-            val fetchResult = RadarFetch(frames, frameAgeMin, coverageVerified)
-            val status = if (latestFrameIncomplete || frameAgeMin > Tuning.RADAR_MAX_FRAME_AGE_MIN) SourceStatus.PARTIAL else SourceStatus.OK
+            val usedAgeMin = if (frames.isNotEmpty()) ((nowSec - frames.last().timeEpochSec) / 60).toInt().coerceAtLeast(0) else frameAgeMin
+            val fetchResult = RadarFetch(frames, usedAgeMin, coverageVerified)
+            val status = if (latestFrameIncomplete || usedAgeMin > Tuning.RADAR_MAX_FRAME_AGE_MIN) SourceStatus.PARTIAL else SourceStatus.OK
             val msg = when {
                 latestFrameIncomplete -> "کاشی رادار ناقص است"
-                frameAgeMin > Tuning.RADAR_MAX_FRAME_AGE_MIN -> "رادار به‌روز نیست (عمر فریم: $frameAgeMin دقیقه)"
+                usedAgeMin > Tuning.RADAR_MAX_FRAME_AGE_MIN -> "رادار به‌روز نیست (عمر فریم: $usedAgeMin دقیقه)"
                 else -> null
             }
 
@@ -219,7 +220,7 @@ object RadarClient {
                 val nowMs = System.currentTimeMillis()
                 val maxAgeMs = Tuning.RADAR_TILE_CACHE_MAX_AGE_MIN * 60 * 1000L
                 radarDir.listFiles()?.forEach { file ->
-                    if (file.isFile && (nowMs - file.lastModified()) > maxAgeMs) {
+                    if (file.isFile && file.name != "coverage.json" && (nowMs - file.lastModified()) > maxAgeMs) {
                         file.delete()
                     }
                 }

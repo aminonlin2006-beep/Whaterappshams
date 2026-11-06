@@ -44,7 +44,7 @@ object ForecastEngine {
     }
 
     private fun r1(v: Double?): Double? = v?.let { (it * 10.0).roundToInt() / 10.0 }
-    private fun r2(v: Double?): Double? = v?.let { (it * 100.0).roundToInt() / 10.0 }
+    internal fun r2(v: Double?): Double? = v?.let { (it * 100.0).roundToInt() / 100.0 }
 
     private fun DoubleArray?.at(i: Int): Double? {
         if (this == null || i < 0 || i >= size) return null
@@ -225,7 +225,9 @@ object ForecastEngine {
             ?: ecmwfGrid?.times ?: iconGrid?.times ?: ensIcon?.times ?: ensEcmwf?.times
             ?: throw java.io.IOException("هیچ منبع مدل در دسترس نیست")
 
-        val nowHourIndex = baseTimes.indexOfFirst { abs(it - nowEpochSec) < 1800L }.coerceAtLeast(0)
+        var nowHourIndex = baseTimes.indexOfFirst { abs(it - nowEpochSec) < 1800L }
+        if (nowHourIndex < 0) nowHourIndex = baseTimes.indexOfFirst { it >= nowEpochSec - 1800L }
+        if (nowHourIndex < 0) throw java.io.IOException("داده‌های مدل برای ساعت جاری موجود نیست")
 
         val rows = mutableListOf<ForecastRow>()
         var peakPrecipMm = 0.0
@@ -234,8 +236,6 @@ object ForecastEngine {
         var peakSci = 0.0
         var maxCape = 0.0
         var maxGust = 0.0
-        var sumPrecipP50 = 0.0
-        var sumPrecipP90 = 0.0
         var virgaCount = 0
         var convectiveCount = 0
 
@@ -403,7 +403,6 @@ object ForecastEngine {
             // 4.9 Virga Risk
             val isVirga = dpDepression != null && rh != null && dpDepression >= Tuning.VIRGA_DEW_DEPRESSION_C && rh <= Tuning.VIRGA_RH_MAX && (pArea ?: 0.0) >= 0.15
             if (isVirga) {
-                virgaCount++
                 if (pPointModel != null) pPointModel *= Tuning.VIRGA_PROB_FACTOR
             }
 
@@ -475,12 +474,12 @@ object ForecastEngine {
             amtP50 = r2(amtP50)
             amtP90 = r2(amtP90)
 
-            if ((amtP50 ?: 0.0) > peakPrecipMm) {
-                peakPrecipMm = amtP50 ?: 0.0
-                peakPrecipTime = hIran
+            if (step < 24) {
+                if ((amtP50 ?: 0.0) > peakPrecipMm) {
+                    peakPrecipMm = amtP50 ?: 0.0
+                    peakPrecipTime = hIran
+                }
             }
-            sumPrecipP50 += (amtP50 ?: 0.0)
-            sumPrecipP90 += (amtP90 ?: 0.0)
 
             // 4.11 Convective Potential Score
             val moistureInflowFlag = steeringWind?.moistureInflow.at(idxSteering) ?: false
@@ -489,8 +488,7 @@ object ForecastEngine {
                 var sc = 45.0 * (cape / 1500.0).coerceIn(0.0, 1.0)
                 if (li != null) sc += 15.0 * ((-li) / 6.0).coerceIn(0.0, 1.0)
                 if (pEns != null) sc += 25.0 * pEns
-                val td = dewPoint ?: 10.0
-                sc += 15.0 * ((td - 5.0) / 10.0).coerceIn(0.0, 1.0)
+                if (dewPoint != null) sc += 15.0 * ((dewPoint - 5.0) / 10.0).coerceIn(0.0, 1.0)
                 if (moistureInflowFlag) sc += 10.0
                 sc = min(sc, 100.0)
                 if (cin != null && abs(cin) > 100.0) sc *= 0.6
@@ -498,15 +496,18 @@ object ForecastEngine {
             }
 
             val cScoreVal = convScore ?: 0.0
-            if (cScoreVal > peakSci) {
-                peakSci = cScoreVal
-                peakTsTime = hIran
-            }
-            if ((cape ?: 0.0) > maxCape) maxCape = cape ?: 0.0
-            if ((windGust ?: 0.0) > maxGust) maxGust = windGust ?: 0.0
+            if (step < 24) {
+                if (cScoreVal > peakSci) {
+                    peakSci = cScoreVal
+                    peakTsTime = hIran
+                }
+                if ((cape ?: 0.0) > maxCape) maxCape = cape ?: 0.0
+                if ((windGust ?: 0.0) > maxGust) maxGust = windGust ?: 0.0
 
-            val isConvective = cScoreVal >= 35.0 || (amtP90 ?: 0.0) >= 1.0
-            if (isConvective) convectiveCount++
+                val isConvective = cScoreVal >= 35.0 || (amtP90 ?: 0.0) >= 1.0
+                if (isConvective) convectiveCount++
+                if (isVirga) virgaCount++
+            }
 
             val convLabelStr = when {
                 cScoreVal >= 60.0 && (pArea ?: 0.0) >= 0.4 -> "احتمال رگبار همرفتی و رعدوبرق ⚡"
@@ -581,12 +582,7 @@ object ForecastEngine {
             blockStats(listOf(ensEcmwf, ensIcon), startEpoch, endEpoch, Tuning.WET_HOUR_MM, Tuning.HEAVY_6H_MM)
         } else null
 
-        val moistureInflowNext12h = steeringWind?.let { s ->
-            val count = minOf(12, s.times.size)
-            (0 until count).any { idx ->
-                s.moistureInflow.getOrNull(idx) == true
-            }
-        } ?: false
+        val moistureInflowNext12h = checkMoistureInflowNext12h(steeringWind, nowEpochSec)
 
         val alertVerdict = decideTier(radarNowcast, synop, rows, block6, block12, moistureInflowNext12h)
 
@@ -675,6 +671,8 @@ object ForecastEngine {
         buildBlock(12)?.let { rangesMap[ForecastRange.H12] = listOf(it) }
         buildBlock(24)?.let { rangesMap[ForecastRange.H24] = listOf(it) }
 
+        val h24 = rangesMap[ForecastRange.H24]?.firstOrNull()
+
         val pattern = PatternSummary(
             windowStartIran = if (rows.isNotEmpty()) rows.first().timeIran else "",
             windowEndIran = if (rows.isNotEmpty()) rows.last().timeIran else "",
@@ -683,13 +681,13 @@ object ForecastEngine {
             peakTsTimeIran = if (peakSci >= 20.0) peakTsTime else "—",
             peakConvectiveScore = r1(peakSci) ?: 0.0,
             maxCape = r1(maxCape) ?: 0.0,
-            totalPrecip24hLikely = r2(sumPrecipP50) ?: 0.0,
-            totalPrecip24hMax = r2(sumPrecipP90) ?: 0.0,
-            maxProb24h = r1(rows.mapNotNull { it.probArea }.maxOrNull() ?: 0.0) ?: 0.0,
-            maxGust24h = r1(maxGust) ?: 0.0,
+            totalPrecip24hLikely = h24?.amountP50 ?: 0.0,
+            totalPrecip24hMax = h24?.amountP90 ?: 0.0,
+            maxProb24h = r1(rows.take(24).mapNotNull { it.probArea }.maxOrNull() ?: 0.0) ?: 0.0,
+            maxGust24h = r1(rows.take(24).mapNotNull { it.gustKmh }.maxOrNull() ?: 0.0) ?: 0.0,
             precipSummaryText = when {
                 radarNowcast.maxDbzInTarget >= Tuning.DBZ_RAIN -> "رادار زنده بارش فعال یا ورود توده رگباری به شعاع ۲۰ کیلومتر را تأیید کرده است."
-                sumPrecipP50 >= 3.0 -> "بارش باران به حجم کلی حدود ${JalaliCalendar.formatNumber(sumPrecipP50)} میلی‌متر پیش‌بینی می‌شود."
+                (h24?.amountP50 ?: 0.0) >= 3.0 -> "بارش باران به حجم کلی حدود ${JalaliCalendar.formatNumber(h24?.amountP50 ?: 0.0)} میلی‌متر پیش‌بینی می‌شود."
                 peakSci >= 35.0 -> "پتانسیل رگبار موضعی همرفتی و صاعقه در ساعات اوج ناپایداری."
                 virgaCount >= 2 -> "خشکی لایه‌های زیرین جو؛ احتمال تبخیر باران در هوا (ویرگا) و وزش تندباد محلی."
                 else -> "۲۴ ساعت آینده در شعاع ۲۰ کیلومتری شمس‌آباد شرایط جوی عمدتاً آرام پیش‌بینی می‌شود."
@@ -836,5 +834,14 @@ object ForecastEngine {
             "آسمان آرام و پایدار در محدوده ۲۰ کیلومتری شمس‌آباد؛ هیچ توده بارشی فعالی رصد نشد.",
             "پایش مستمر با رادار و دیدبانی صفی‌آباد برقرار است."
         )
+    }
+
+    fun checkMoistureInflowNext12h(steeringWind: SteeringWind?, nowEpochSec: Long): Boolean {
+        return steeringWind?.let { s ->
+            s.times.indices.any { k ->
+                s.times[k] > nowEpochSec - 1800L && s.times[k] <= nowEpochSec + 12 * 3600L &&
+                    s.moistureInflow.getOrNull(k) == true
+            }
+        } ?: false
     }
 }

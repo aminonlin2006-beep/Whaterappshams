@@ -45,7 +45,6 @@ object VerificationStore {
             val futureUtcTimes = getNextSynopWindowEnds(nowEpochSec)
 
             for (windowEndSec in futureUtcTimes) {
-                val windowStartSec = windowEndSec - 6 * 3600L
                 val leadH = ((windowEndSec - nowEpochSec) / 3600L).toInt()
                 val leadBucket = when {
                     leadH <= 6 -> 6
@@ -54,33 +53,47 @@ object VerificationStore {
                     else -> continue
                 }
 
-                val subRows = rows.filter { it.timeEpochSec > windowStartSec && it.timeEpochSec <= windowEndSec }
-                if (subRows.isEmpty()) continue
+                val cal = Calendar.getInstance(TimeZone.getTimeZone("UTC")).apply {
+                    timeInMillis = windowEndSec * 1000L
+                }
+                val hourUtc = cal.get(Calendar.HOUR_OF_DAY)
 
-                val bs = ForecastEngine.blockStats(ensList, windowStartSec, windowEndSec, Tuning.WET_HOUR_MM, Tuning.HEAVY_6H_MM)
-                val maxPointProb = subRows.mapNotNull { it.probPoint?.let { p -> p / 100.0 } }.maxOrNull()
-                val pBlock = when {
-                    bs.pWet != null && maxPointProb != null -> Math.max(bs.pWet, maxPointProb)
-                    bs.pWet != null -> bs.pWet
-                    maxPointProb != null -> maxPointProb
-                    else -> null
-                } ?: continue
-
-                val amountP50 = bs.p50 ?: subRows.mapNotNull { it.amountP50 }.let { if (it.isNotEmpty()) it.sum() else null }
-
-                val key = "$windowEndSec:$leadBucket"
-                val entry = JSONObject().apply {
-                    put("key", key)
-                    put("recordedAtMs", nowMs)
-                    put("windowEndEpochSec", windowEndSec)
-                    put("leadBucket", leadBucket)
-                    put("probBlock", pBlock)
-                    put("amountP50", amountP50 ?: 0.0)
-                    put("observedWet", JSONObject.NULL)
-                    put("observedAmount", JSONObject.NULL)
+                val periodsToRecord = mutableListOf(6)
+                if (hourUtc == 6 || hourUtc == 18) {
+                    periodsToRecord.add(12)
                 }
 
-                records[key] = entry
+                for (periodH in periodsToRecord) {
+                    val windowStartSec = windowEndSec - periodH * 3600L
+                    val subRows = rows.filter { it.timeEpochSec > windowStartSec && it.timeEpochSec <= windowEndSec }
+                    if (subRows.isEmpty()) continue
+
+                    val bs = ForecastEngine.blockStats(ensList, windowStartSec, windowEndSec, Tuning.WET_HOUR_MM, Tuning.HEAVY_6H_MM)
+                    val maxPointProb = subRows.mapNotNull { it.probPoint?.let { p -> p / 100.0 } }.maxOrNull()
+                    val pBlock = when {
+                        bs.pWet != null && maxPointProb != null -> Math.max(bs.pWet, maxPointProb)
+                        bs.pWet != null -> bs.pWet
+                        maxPointProb != null -> maxPointProb
+                        else -> null
+                    } ?: continue
+
+                    val amountP50 = bs.p50 ?: subRows.mapNotNull { it.amountP50 }.let { if (it.isNotEmpty()) it.sum() else null }
+
+                    val key = "$windowEndSec:$periodH:$leadBucket"
+                    val entry = JSONObject().apply {
+                        put("key", key)
+                        put("recordedAtMs", nowMs)
+                        put("windowEndEpochSec", windowEndSec)
+                        put("periodH", periodH)
+                        put("leadBucket", leadBucket)
+                        put("probBlock", pBlock)
+                        put("amountP50", amountP50 ?: 0.0)
+                        put("observedWet", JSONObject.NULL)
+                        put("observedAmount", JSONObject.NULL)
+                    }
+
+                    records[key] = entry
+                }
             }
 
             writeRecords(file, records)
@@ -92,7 +105,7 @@ object VerificationStore {
     }
 
     fun evaluateWithSynop(context: Context, synop: SynopObs) {
-        if (synop.precipPeriodH != Tuning.VERIFY_WINDOW_H || synop.precipMm == null) return
+        if (synop.precipMm == null || synop.precipPeriodH !in Tuning.VERIFY_WINDOWS_H) return
         try {
             val file = File(context.filesDir, FILE_NAME)
             if (!file.exists()) return
@@ -105,7 +118,8 @@ object VerificationStore {
 
             for ((_, json) in records) {
                 val endSec = json.optLong("windowEndEpochSec", 0L)
-                if (endSec == synop.timeUtcEpochSec && json.isNull("observedWet")) {
+                val periodH = json.optInt("periodH", 6)
+                if (endSec == synop.timeUtcEpochSec && periodH == synop.precipPeriodH && json.isNull("observedWet")) {
                     json.put("observedWet", obsWet)
                     json.put("observedAmount", obsAmt)
                     modified = true
@@ -238,7 +252,7 @@ object VerificationStore {
             file.forEachLine { line ->
                 if (line.isNotBlank()) {
                     val json = JSONObject(line)
-                    val key = json.optString("key", "${json.optLong("windowEndEpochSec")}:${json.optInt("leadBucket")}")
+                    val key = json.optString("key", "${json.optLong("windowEndEpochSec")}:${json.optInt("periodH", 6)}:${json.optInt("leadBucket")}")
                     map[key] = json
                 }
             }

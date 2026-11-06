@@ -27,16 +27,21 @@ class WeatherRepository(private val context: Context) {
             val json = JSONObject(raw)
             if (json.optInt("schema", 0) != 5) return@withContext null
 
-            val cacheAgeMs = System.currentTimeMillis() - cacheFile.lastModified()
+            val cachedAtMs = if (json.has("cachedAtMs")) json.optLong("cachedAtMs") else cacheFile.lastModified()
+            val cacheAgeMs = System.currentTimeMillis() - cachedAtMs
             val dashboard = parseDashboard(json)
 
-            // If cache is older than 2 hours, disable stale radar nowcast info
+            // If cache is older than 2 hours, disable stale radar nowcast info and re-evaluate verdict
             if (cacheAgeMs > 2 * 3600 * 1000L) {
+                val staleRadar = dashboard.radarNowcast.copy(
+                    available = false,
+                    statusText = "داده‌های رادار به علت قدمت کش (بیش از ۲ ساعت) نمایش داده نمی‌شوند."
+                )
+                val hourly = dashboard.ranges[ForecastRange.HOURLY] ?: emptyList()
+                val newVerdict = ForecastEngine.decideTier(staleRadar, null, hourly, null, null, false)
                 dashboard.copy(
-                    radarNowcast = dashboard.radarNowcast.copy(
-                        available = false,
-                        statusText = "داده‌های رادار به علت قدمت کش (بیش از ۲ ساعت) نمایش داده نمی‌شوند."
-                    )
+                    radarNowcast = staleRadar,
+                    verdict = newVerdict
                 )
             } else {
                 dashboard
@@ -186,6 +191,8 @@ class WeatherRepository(private val context: Context) {
                     put("amountP50", row.amountP50)
                     put("amountP90", row.amountP90)
                     put("tempC", row.tempC)
+                    put("tempMinC", row.tempMinC)
+                    put("tempMaxC", row.tempMaxC)
                     put("dewC", row.dewC)
                     put("rh", row.rh)
                     put("cloud", row.cloud)
@@ -197,6 +204,9 @@ class WeatherRepository(private val context: Context) {
                     put("convLabel", row.convLabel)
                     put("virgaRisk", row.virgaRisk)
                     put("confidence", row.confidence)
+                    val srcArr = JSONArray()
+                    row.sources.forEach { srcArr.put(it) }
+                    put("sources", srcArr)
                     put("eventLabel", row.eventLabel)
                 }
                 arr.put(rj)
@@ -258,6 +268,8 @@ class WeatherRepository(private val context: Context) {
                         amountP50 = rj.optNullableDouble("amountP50"),
                         amountP90 = rj.optNullableDouble("amountP90"),
                         tempC = rj.optNullableDouble("tempC"),
+                        tempMinC = rj.optNullableDouble("tempMinC"),
+                        tempMaxC = rj.optNullableDouble("tempMaxC"),
                         dewC = rj.optNullableDouble("dewC"),
                         rh = rj.optNullableDouble("rh"),
                         cloud = rj.optNullableDouble("cloud"),
@@ -269,6 +281,9 @@ class WeatherRepository(private val context: Context) {
                         convLabel = rj.optString("convLabel", "پایدار"),
                         virgaRisk = rj.optBoolean("virgaRisk", false),
                         confidence = if (rj.has("confidence") && !rj.isNull("confidence")) rj.optInt("confidence") else null,
+                        sources = rj.optJSONArray("sources")?.let { sArr ->
+                            (0 until sArr.length()).mapNotNull { sArr.optString(it) }
+                        } ?: emptyList(),
                         eventLabel = rj.optString("eventLabel", "—")
                     )
                 )

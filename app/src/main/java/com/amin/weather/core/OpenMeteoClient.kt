@@ -250,37 +250,34 @@ object OpenMeteoClient {
     fun fetchLiftedIndex(): SourceResult<Pair<LongArray, DoubleArray>> {
         val lat = RegionConfig.CENTER.lat
         val lon = RegionConfig.CENTER.lon
-        val url = String.format(
-            java.util.Locale.US,
-            "$FORECAST_API?latitude=%.4f&longitude=%.4f&models=gfs_seamless&hourly=lifted_index&forecast_days=3&past_days=1&timezone=GMT&timeformat=unixtime",
-            lat, lon
-        )
+        val modelsToTry = listOf("gfs_seamless", "gfs_global")
 
-        val resp = Http.get(url)
-        if (!resp.isSuccess || resp.bodyString == null) {
-            return SourceResult("open-meteo/lifted_index", SourceStatus.PARTIAL, null, resp.error ?: "HTTP ${resp.code}")
-        }
+        for (model in modelsToTry) {
+            val url = String.format(
+                java.util.Locale.US,
+                "$FORECAST_API?latitude=%.4f&longitude=%.4f&models=%s&hourly=lifted_index&forecast_days=3&past_days=1&timezone=GMT&timeformat=unixtime",
+                lat, lon, model
+            )
 
-        return try {
-            val json = JSONObject(resp.bodyString!!)
-            if (json.optBoolean("error", false)) {
-                return SourceResult("open-meteo/lifted_index", SourceStatus.PARTIAL, null, json.optString("reason", "API error"))
+            val resp = Http.get(url)
+            if (resp.isSuccess && resp.bodyString != null) {
+                try {
+                    val json = JSONObject(resp.bodyString!!)
+                    if (!json.optBoolean("error", false)) {
+                        val hourly = json.getJSONObject("hourly")
+                        val timesJson = hourly.getJSONArray("time")
+                        val nHours = timesJson.length()
+                        val times = LongArray(nHours) { timesJson.getLong(it) }
+
+                        val liArr = parseNullableDoubleArray(hourly, "lifted_index", model, nHours)
+                        if (liArr != null) {
+                            return SourceResult("open-meteo/lifted_index", SourceStatus.OK, Pair(times, liArr))
+                        }
+                    }
+                } catch (_: Exception) {}
             }
-
-            val hourly = json.getJSONObject("hourly")
-            val timesJson = hourly.getJSONArray("time")
-            val nHours = timesJson.length()
-            val times = LongArray(nHours) { timesJson.getLong(it) }
-
-            val liArr = parseNullableDoubleArray(hourly, "lifted_index", "gfs_seamless", nHours)
-            if (liArr != null) {
-                SourceResult("open-meteo/lifted_index", SourceStatus.OK, Pair(times, liArr))
-            } else {
-                SourceResult("open-meteo/lifted_index", SourceStatus.PARTIAL, null, "No lifted index data")
-            }
-        } catch (e: Exception) {
-            SourceResult("open-meteo/lifted_index", SourceStatus.PARTIAL, null, e.message)
         }
+        return SourceResult("open-meteo/lifted_index", SourceStatus.PARTIAL, null, "No lifted index data from GFS models")
     }
 
     fun fetchSteeringWind(): SourceResult<SteeringWind> {

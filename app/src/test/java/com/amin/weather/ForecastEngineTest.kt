@@ -181,4 +181,42 @@ class ForecastEngineTest {
         )
         assertEquals(AlertTier.ORANGE, verdict.tier)
     }
+
+    @Test
+    fun testR2Rounding() {
+        assertEquals(1.23, ForecastEngine.r2(1.234)!!, 1e-4)
+        assertEquals(12.5, ForecastEngine.r2(12.5)!!, 1e-4)
+        assertEquals(0.01, ForecastEngine.r2(0.006)!!, 1e-4)
+        assertEquals(null, ForecastEngine.r2(null))
+    }
+
+    @Test
+    fun testMoistureInflowPastFiltering() {
+        val nowEpoch = 100000L
+        // Hour in past (24 hours ago)
+        val pastTime = nowEpoch - 24 * 3600L
+        val futureTime = nowEpoch + 2 * 3600L
+
+        val pastSteering = SteeringWind(
+            times = longArrayOf(pastTime),
+            speedKmh = doubleArrayOf(30.0),
+            dirToDeg = doubleArrayOf(45.0),
+            moistureInflow = booleanArrayOf(true)
+        )
+
+        // Past steering alone should NOT trigger moisture inflow
+        val flowPast = ForecastEngine.checkMoistureInflowNext12h(pastSteering, nowEpoch)
+        assertEquals(false, flowPast)
+
+        val futureSteering = SteeringWind(
+            times = longArrayOf(futureTime),
+            speedKmh = doubleArrayOf(30.0),
+            dirToDeg = doubleArrayOf(45.0),
+            moistureInflow = booleanArrayOf(true)
+        )
+
+        // Future steering should trigger moisture inflow
+        val flowFuture = ForecastEngine.checkMoistureInflowNext12h(futureSteering, nowEpoch)
+        assertEquals(true, flowFuture)
+    }
 }
