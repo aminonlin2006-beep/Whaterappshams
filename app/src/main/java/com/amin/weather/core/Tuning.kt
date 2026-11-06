@@ -24,8 +24,23 @@ object Tuning {
     const val CELL_SPEED_MIN_KMH = 5.0
     const val CELL_SPEED_MAX_KMH = 120.0
     const val ETA_UNCERTAINTY_FRAC = 0.3
-    const val CLUTTER_MIN_FRAMES = 6     // پیکسلی که در ۶ فریم پیاپی ثابت است
-    const val CLUTTER_MAX_DBZ_STD = 2.0
+
+    // اصلاحیهٔ دوم
+    const val RADAR_FRAMES_USED = 3              // فریم‌های لازم برای ردیابی و کلاتر
+    const val RADAR_TILE_CACHE_MAX_AGE_MIN = 180
+    const val CLUTTER_FRAMES = 3                 // جایگزین CLUTTER_MIN_FRAMES
+    const val CLUTTER_MAX_DBZ_RANGE = 3          // اختلاف بیشینه و کمینهٔ dBZ پیکسل در فریم‌ها
+    const val TRACK_FRAME_GAP_MIN_MIN = 5
+    const val TRACK_FRAME_GAP_MAX_MIN = 20
+    const val POINT_RADIUS_KM = 3.0              // «نقطهٔ» شمس‌آباد برای nowcast
+    const val UPWIND_RING_MIN_KM = 50.0
+    const val UPWIND_BEARING_MIN = 202.5         // جنوب‌غرب
+    const val UPWIND_BEARING_MAX = 337.5         // شمال‌غرب
+    const val NEIGH_MIN_VALID_POINTS = 12        // حداقل نقطهٔ معتبر از ۱۷ نقطه
+    const val SYNOP_FRESH_SEC = 5400L            // ۹۰ دقیقه
+    const val VERIFY_WINDOW_H = 6
+    const val VERIFY_MAX_LINES = 5000
+    const val YELLOW_MOIST_MIN_PROB = 0.20
 
     // وزن ترکیب nowcast رادار با مدل برای ساعت ۱، ۲، ۳
     val NOWCAST_WEIGHT = doubleArrayOf(0.70, 0.40, 0.15)

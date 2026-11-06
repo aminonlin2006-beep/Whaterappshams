@@ -5,6 +5,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
+import org.json.JSONObject
 import kotlin.math.exp
 
 data class SynopObs(
@@ -26,8 +27,13 @@ object SynopClient {
 
     fun fetchLatestSynop(cacheDir: File? = null): SourceResult<SynopObs> {
         val nowSec = System.currentTimeMillis() / 1000
+
+        if (cachedObs == null && cacheDir != null) {
+            readDiskCache(cacheDir)
+        }
+
         if (cachedObs != null && (nowSec - lastFetchTimeEpochSec) < Tuning.SYNOP_MIN_INTERVAL_MIN * 60) {
-            return SourceResult("ogimet/synop/40794", SourceStatus.OK, cachedObs, "From in-memory cache")
+            return SourceResult("ogimet/synop/40794", SourceStatus.OK, cachedObs, "From cache")
         }
 
         val sdf = SimpleDateFormat("yyyyMMddHHmm", Locale.US).apply {
@@ -51,6 +57,9 @@ object SynopClient {
         return if (parsed != null) {
             cachedObs = parsed
             lastFetchTimeEpochSec = nowSec
+            if (cacheDir != null) {
+                writeDiskCache(cacheDir, parsed, nowSec)
+            }
             SourceResult("ogimet/synop/40794", SourceStatus.OK, parsed)
         } else {
             if (cachedObs != null) {
@@ -61,148 +70,143 @@ object SynopClient {
         }
     }
 
+    private fun readDiskCache(cacheDir: File) {
+        try {
+            val file = File(cacheDir, "synop_cache.json")
+            if (file.exists()) {
+                val json = JSONObject(file.readText())
+                val timeSec = json.getLong("timeUtcEpochSec")
+                val tempC = if (json.isNull("tempC")) null else json.getDouble("tempC")
+                val dewC = if (json.isNull("dewC")) null else json.getDouble("dewC")
+                val rh = if (json.isNull("rh")) null else json.getDouble("rh")
+                val precipMm = if (json.isNull("precipMm")) null else json.getDouble("precipMm")
+                val precipPeriodH = if (json.isNull("precipPeriodH")) null else json.getInt("precipPeriodH")
+                val ww = if (json.isNull("ww")) null else json.getInt("ww")
+                val isRainNow = json.getBoolean("isRainNow")
+                val isThunder = json.getBoolean("isThunder")
+                val isRecentPrecip = json.getBoolean("isRecentPrecip")
+
+                cachedObs = SynopObs(timeSec, tempC, dewC, rh, precipMm, precipPeriodH, ww, isRainNow, isThunder, isRecentPrecip)
+                lastFetchTimeEpochSec = json.optLong("lastFetchTimeEpochSec", timeSec)
+            }
+        } catch (_: Exception) {}
+    }
+
+    private fun writeDiskCache(cacheDir: File, obs: SynopObs, fetchTimeSec: Long) {
+        try {
+            val file = File(cacheDir, "synop_cache.json")
+            val json = JSONObject().apply {
+                put("timeUtcEpochSec", obs.timeUtcEpochSec)
+                put("tempC", obs.tempC ?: JSONObject.NULL)
+                put("dewC", obs.dewC ?: JSONObject.NULL)
+                put("rh", obs.rh ?: JSONObject.NULL)
+                put("precipMm", obs.precipMm ?: JSONObject.NULL)
+                put("precipPeriodH", obs.precipPeriodH ?: JSONObject.NULL)
+                put("ww", obs.ww ?: JSONObject.NULL)
+                put("isRainNow", obs.isRainNow)
+                put("isThunder", obs.isThunder)
+                put("isRecentPrecip", obs.isRecentPrecip)
+                put("lastFetchTimeEpochSec", fetchTimeSec)
+            }
+            file.writeText(json.toString())
+        } catch (_: Exception) {}
+    }
+
     fun parseOgimetResponse(responseBody: String): SynopObs? {
         val lines = responseBody.lines().filter { it.contains("40794,") && !it.contains("NIL") }
         if (lines.isEmpty()) return null
 
-        // Parse latest line
         val lastLine = lines.last()
         return parseSynopLine(lastLine)
     }
 
     fun parseSynopLine(line: String): SynopObs? {
-        val parts = line.split(",")
-        if (parts.size < 7) return null
-
-        val yyyy = parts[1].trim().toIntOrNull() ?: return null
-        val mm = parts[2].trim().toIntOrNull() ?: return null
-        val dd = parts[3].trim().toIntOrNull() ?: return null
-        val hh = parts[4].trim().toIntOrNull() ?: return null
-        val min = parts[5].trim().toIntOrNull() ?: return null
-
+        val head = line.split(",", limit = 7)
+        if (head.size < 7) return null
+        val y = head[1].trim().toIntOrNull() ?: return null
+        val mo = head[2].trim().toIntOrNull() ?: return null
+        val d = head[3].trim().toIntOrNull() ?: return null
+        val hh = head[4].trim().toIntOrNull() ?: return null
+        val mi = head[5].trim().toIntOrNull() ?: return null
         val cal = java.util.Calendar.getInstance(TimeZone.getTimeZone("UTC")).apply {
-            set(yyyy, mm - 1, dd, hh, min, 0)
-            set(java.util.Calendar.MILLISECOND, 0)
+            clear(); set(y, mo - 1, d, hh, mi, 0)
         }
         val timeSec = cal.timeInMillis / 1000
 
-        val synopText = parts.subList(6, parts.size).joinToString(",").trim().trimEnd('=')
-        val groups = synopText.split("\\s+".toRegex())
+        val toks = head[6].replace("=", " ").trim().split(Regex("\\s+"))
+        if (toks.size < 5 || toks[0] != "AAXX" || toks.any { it == "NIL" }) return null
+        // toks[1]=YYGGiw  toks[2]=IIiii  toks[3]=iRiXhVV  toks[4]=Nddff
+        val irix = toks[3]
+        if (irix.length != 5) return null
+        val iR = irix[0].digitToIntOrNull()
+        val iX = irix[1].digitToIntOrNull()
 
-        var iR = 4
-        var iX = 2
-        var tempC: Double? = null
-        var dewC: Double? = null
-        var rh: Double? = null
-        var precipMm: Double? = null
-        var precipPeriodH: Int? = null
+        var i = 5
+        if (toks[4].length == 5 && toks[4].substring(3, 5) == "99" && i < toks.size && toks[i].startsWith("00")) i++  // 00fff
+
+        var section = 1
+        var tempC: Double? = null; var dewC: Double? = null; var rh: Double? = null
+        var p1: Pair<Double?, Int?>? = null; var p3: Pair<Double?, Int?>? = null
         var ww: Int? = null
-        var isRainNow = false
-        var isThunder = false
-        var isRecentPrecip = false
 
-        var inSection3 = false
-
-        for (g in groups) {
-            if (g == "333") {
-                inSection3 = true
-                continue
-            }
-
-            if (!inSection3) {
-                // iRiXhVV group (usually 7th or after AAXX YYGGiw IIiii)
-                if (g.length == 5 && g[0].isDigit() && g[1].isDigit()) {
-                    val possibleIR = g[0] - '0'
-                    val possibleIX = g[1] - '0'
-                    if (possibleIR in 0..4 && possibleIX in 1..7) {
-                        iR = possibleIR
-                        iX = possibleIX
-                        if (iR == 3) precipMm = 0.0
+        while (i < toks.size) {
+            val g = toks[i]; i++
+            if (g == "333") { section = 3; continue }
+            if (g == "555" || g == "444" || g.startsWith("222")) { section = 9; continue }
+            if (section == 9 || g.length != 5) continue
+            if (section == 1) {
+                when (g[0]) {
+                    '1' -> if (g[1] == '0' || g[1] == '1') g.substring(2).toIntOrNull()?.let {
+                        tempC = (if (g[1] == '0') it else -it) / 10.0 }
+                    '2' -> when (g[1]) {
+                        '0', '1' -> g.substring(2).toIntOrNull()?.let { dewC = (if (g[1] == '0') it else -it) / 10.0 }
+                        '9' -> g.substring(2).toIntOrNull()?.let { rh = it.toDouble() }
                     }
+                    '6' -> p1 = parseGroup6(g)
+                    '7' -> if (iX == 1 || iX == 4 || iX == 7) ww = g.substring(1, 3).toIntOrNull()
                 }
-
-                // 1snTTT
-                if (g.length == 5 && g.startsWith("1")) {
-                    val sn = g[1] - '0'
-                    val ttt = g.substring(2).toDoubleOrNull()
-                    if (ttt != null) {
-                        tempC = (if (sn == 1) -ttt else ttt) / 10.0
-                    }
-                }
-
-                // 2snTdTdTd
-                if (g.length == 5 && g.startsWith("2")) {
-                    val sn = g[1] - '0'
-                    val ttt = g.substring(2).toDoubleOrNull()
-                    if (ttt != null) {
-                        if (sn == 9) {
-                            rh = ttt
-                        } else {
-                            dewC = (if (sn == 1) -ttt else ttt) / 10.0
-                        }
-                    }
-                }
-
-                // 6RRRtR in Section 1
-                if (g.length == 5 && g.startsWith("6") && (iR == 0 || iR == 1)) {
-                    val (pMm, pH) = parseGroup6(g)
-                    precipMm = pMm
-                    precipPeriodH = pH
-                }
-
-                // 7wwW1W2 in Section 1
-                if (g.length == 5 && g.startsWith("7") && (iX == 1 || iX == 4 || iX == 7)) {
-                    val code = g.substring(1, 3).toIntOrNull()
-                    if (code != null) {
-                        ww = code
-                        if (code in 50..69 || code in 80..84 || code in 91..99) isRainNow = true
-                        if (code in 91..99 || code == 17) isThunder = true
-                        if (code in 20..29) isRecentPrecip = true
-                    }
-                }
-            } else {
-                // In Section 3
-                if (g.length == 5 && g.startsWith("6") && iR == 2) {
-                    val (pMm, pH) = parseGroup6(g)
-                    precipMm = pMm
-                    precipPeriodH = pH
-                }
+            } else if (section == 3 && g[0] == '6') {
+                p3 = parseGroup6(g)
             }
         }
+
+        val (precipMm, periodH) = when (iR) {
+            0 -> (p1 ?: p3) ?: Pair(null, null)
+            1 -> p1 ?: Pair(null, null)
+            2 -> p3 ?: Pair(null, null)
+            3 -> Pair(0.0, null)      // نباریده؛ دوره در گزارش نیامده
+            else -> Pair(null, null)  // 4 یا نامعلوم: اندازه‌گیری نشده
+        }
+
+        val code = ww
+        val isAuto = iX == 7          // جدول wawa
+        val isRainNow = code != null && if (isAuto) (code in 40..69 || code in 80..89)
+                                       else (code in 50..69 || code in 80..84 || code in 91..99)
+        val isThunder = code != null && if (isAuto) code in 90..99 else (code in 91..99 || code == 17)
+        val isRecentPrecip = code != null && !isAuto && code in 20..29
 
         if (rh == null && tempC != null && dewC != null) {
-            val e = 6.112 * exp((17.67 * tempC) / (tempC + 243.5))
-            val ew = 6.112 * exp((17.67 * dewC) / (dewC + 243.5))
-            rh = ((ew / e) * 100.0).coerceIn(0.0, 100.0)
+            val e = 6.112 * exp(17.67 * tempC!! / (tempC!! + 243.5))
+            val ew = 6.112 * exp(17.67 * dewC!! / (dewC!! + 243.5))
+            rh = (ew / e * 100.0).coerceIn(0.0, 100.0)
         }
-
-        return SynopObs(
-            timeUtcEpochSec = timeSec,
-            tempC = tempC,
-            dewC = dewC,
-            rh = rh,
-            precipMm = precipMm,
-            precipPeriodH = precipPeriodH,
-            ww = ww,
-            isRainNow = isRainNow,
-            isThunder = isThunder,
-            isRecentPrecip = isRecentPrecip
-        )
+        return SynopObs(timeSec, tempC, dewC, rh, precipMm, periodH, ww, isRainNow, isThunder, isRecentPrecip)
     }
 
     private fun parseGroup6(g: String): Pair<Double?, Int?> {
+        if (g.length != 5) return Pair(null, null)
         val rrr = g.substring(1, 4)
+        if (rrr == "///") return Pair(null, null)
         val tr = g.last()
 
-        val mm = when (rrr) {
-            "000" -> 0.0
-            "990" -> 0.05 // trace
-            else -> {
-                val num = rrr.toDoubleOrNull()
-                if (num != null) {
-                    if (num in 991.0..999.0) (num - 990.0) / 10.0 else num
-                } else null
-            }
+        val num = rrr.toDoubleOrNull() ?: return Pair(null, null)
+        if (num > 988.0 && num < 990.0) return Pair(null, null)
+
+        val mm = when {
+            rrr == "000" -> 0.0
+            rrr == "990" -> 0.05
+            num in 991.0..999.0 -> (num - 990.0) / 10.0
+            else -> num
         }
 
         val periodH = when (tr) {

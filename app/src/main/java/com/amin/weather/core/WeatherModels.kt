@@ -91,6 +91,8 @@ data class ForecastRow(
     val amountP50: Double?,
     val amountP90: Double?,
     val tempC: Double?,
+    val tempMinC: Double? = tempC,
+    val tempMaxC: Double? = tempC,
     val dewC: Double?,
     val rh: Double?,
     val cloud: Double?,

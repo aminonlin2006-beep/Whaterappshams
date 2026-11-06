@@ -11,7 +11,7 @@ object UniversalBlue {
         0xFFFFFF
     )
     private const val FIRST_DBZ = 15
-    private val cache = HashMap<Int, Int>()
+    private val cache = java.util.concurrent.ConcurrentHashMap<Int, Int>()
 
     /** Returns dBZ (15..65) or -1 for no rain/weak echo/transparent */
     fun dbz(argb: Int): Int {

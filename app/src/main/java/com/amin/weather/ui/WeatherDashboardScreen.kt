@@ -878,9 +878,9 @@ private fun HourlyTimelineSection(
                 contentPadding = PaddingValues(horizontal = 2.dp)
             ) {
                 itemsIndexed(rows.take(24)) { index, row ->
-                    val probAreaInt = row.probArea?.toInt() ?: 0
-                    val probPointInt = row.probPoint?.toInt() ?: 0
-                    val isRain = probAreaInt >= 20 || (row.amountP50 ?: 0.0) >= 0.1
+                    val probAreaStr = row.probArea?.let { "${it.toInt()}٪" } ?: "نامشخص"
+                    val probPointStr = row.probPoint?.let { "${it.toInt()}٪" } ?: "نامشخص"
+                    val isRain = (row.probArea ?: 0.0) >= 20.0 || (row.amountP50 ?: 0.0) >= 0.1
                     val isSelected = selectedRowIndex == index
 
                     Card(
@@ -908,7 +908,7 @@ private fun HourlyTimelineSection(
                             )
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
-                                text = "${JalaliCalendar.formatNumber(row.tempC)}°",
+                                text = row.tempC?.let { "${JalaliCalendar.formatNumber(it)}°" } ?: "—",
                                 style = MaterialTheme.typography.titleSmall,
                                 fontWeight = FontWeight.Bold
                             )
@@ -922,7 +922,7 @@ private fun HourlyTimelineSection(
                                 )
                                 Spacer(modifier = Modifier.width(2.dp))
                                 Text(
-                                    text = "$probAreaInt%",
+                                    text = probAreaStr,
                                     style = MaterialTheme.typography.labelSmall,
                                     fontWeight = FontWeight.Bold,
                                     color = if (isRain) SkyAccent else TextSecondary,
@@ -930,12 +930,12 @@ private fun HourlyTimelineSection(
                                 )
                             }
                             Text(
-                                text = "مرکز: $probPointInt%",
+                                text = "مرکز: $probPointStr",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = TextSecondary,
                                 fontSize = 9.sp
                             )
-                            if ((row.amountP50 ?: 0.0) >= 0.1) {
+                            if (row.amountP50 != null && row.amountP50 >= 0.1) {
                                 Text(
                                     text = "${JalaliCalendar.formatNumber(row.amountP50)} mm",
                                     style = MaterialTheme.typography.labelSmall,
@@ -978,20 +978,20 @@ private fun HourlyTimelineSection(
                         color = SkyAccent
                     )
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("احتمال محدوده ۲۰km: ${selRow.probArea?.toInt() ?: 0}٪", style = MaterialTheme.typography.labelSmall)
-                        Text("احتمال نقطه‌ای شمس‌آباد: ${selRow.probPoint?.toInt() ?: 0}٪", style = MaterialTheme.typography.labelSmall)
+                        Text("احتمال محدوده ۲۰km: ${selRow.probArea?.let { "${it.toInt()}٪" } ?: "نامشخص"}", style = MaterialTheme.typography.labelSmall)
+                        Text("احتمال نقطه‌ای شمس‌آباد: ${selRow.probPoint?.let { "${it.toInt()}٪" } ?: "نامشخص"}", style = MaterialTheme.typography.labelSmall)
                     }
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("بارش محتمل (P50): ${JalaliCalendar.formatNumber(selRow.amountP50)} mm", style = MaterialTheme.typography.labelSmall)
-                        Text("بیشینه بارش (P90): ${JalaliCalendar.formatNumber(selRow.amountP90)} mm", style = MaterialTheme.typography.labelSmall)
+                        Text("بارش محتمل (P50): ${selRow.amountP50?.let { "${JalaliCalendar.formatNumber(it)} mm" } ?: "نامشخص"}", style = MaterialTheme.typography.labelSmall)
+                        Text("بیشینه بارش (P90): ${selRow.amountP90?.let { "${JalaliCalendar.formatNumber(it)} mm" } ?: "نامشخص"}", style = MaterialTheme.typography.labelSmall)
                     }
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("دما: ${JalaliCalendar.formatNumber(selRow.tempC)}°C | شبنم: ${JalaliCalendar.formatNumber(selRow.dewC)}°C", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
-                        Text("رطوبت: ${JalaliCalendar.formatNumber(selRow.rh)}٪", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+                        Text("دما: ${selRow.tempC?.let { "${JalaliCalendar.formatNumber(it)}°C" } ?: "—"} | شبنم: ${selRow.dewC?.let { "${JalaliCalendar.formatNumber(it)}°C" } ?: "—"}", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+                        Text("رطوبت: ${selRow.rh?.let { "${JalaliCalendar.formatNumber(it)}٪" } ?: "—"}", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
                     }
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("تندباد: ${JalaliCalendar.formatNumber(selRow.gustKmh)} km/h (${selRow.windDirLabel ?: "—"})", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
-                        Text("پوشش ابر: ${JalaliCalendar.formatNumber(selRow.cloud)}٪", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+                        Text("تندباد: ${selRow.gustKmh?.let { "${JalaliCalendar.formatNumber(it)} km/h" } ?: "—"} (${selRow.windDirLabel ?: "—"})", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+                        Text("پوشش ابر: ${selRow.cloud?.let { "${JalaliCalendar.formatNumber(it)}٪" } ?: "—"}", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
                     }
                     if (selRow.sources.isNotEmpty()) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1104,9 +1104,11 @@ private fun RadarCanvasCard(radar: RadarNowcastResult) {
                             center = Offset(cellPxX, cellPxY)
                         )
 
-                        if (cell.speedKmh > 1.0) {
-                            val moveRad = Math.toRadians(cell.moveDirectionToDeg)
-                            val arrowLen = (cell.speedKmh * 0.5).toFloat() * scale
+                        val spd = cell.speedKmh
+                        val dirTo = cell.moveDirectionToDeg
+                        if (spd != null && dirTo != null && spd > 1.0) {
+                            val moveRad = Math.toRadians(dirTo)
+                            val arrowLen = (spd * 0.5).toFloat() * scale
                             val endX = cellPxX + arrowLen * sin(moveRad).toFloat()
                             val endY = cellPxY - arrowLen * cos(moveRad).toFloat()
                             drawLine(
@@ -1154,8 +1156,19 @@ private fun RadarCanvasCard(radar: RadarNowcastResult) {
                             fontWeight = FontWeight.Bold,
                             color = AmberStorm
                         )
+                        val spdStr = arr.speedKmh?.toInt()?.toString() ?: "نامعلوم"
+                        val headingStr = if (arr.state == CellApproachState.UNKNOWN_MOTION) "جهت حرکت نامعلوم" else "حرکت به سمت ${arr.headingFa}"
+                        val motionSourceFa = when (arr.motionSource) {
+                            "radar_track" -> "ردیابی رادار"
+                            "steering_wind" -> "باد مدل"
+                            else -> "نامعلوم"
+                        }
+                        val etaStr = if (arr.etaMinLow != null && arr.etaMinHigh != null) "${arr.etaMinLow} تا ${arr.etaMinHigh} دقیقه دیگر" else "نامشخص"
+                        val covNotice = if (!radar.coverageVerified) " · پوشش رادار تایید نشده" else ""
+                        val clutterNotice = if (radar.clutterPixelsRemoved > 0) " (${radar.clutterPixelsRemoved} پیکسل کلاتر حذف شد)" else ""
+
                         Text(
-                            text = "حرکت به سمت ${arr.headingFa} با سرعت ${arr.speedKmh.toInt()} km/h · زمان ورود: ${arr.etaLowMin} تا ${arr.etaHighMin} دقیقه دیگر",
+                            text = "$headingStr با سرعت $spdStr km/h ($motionSourceFa) · زمان ورود: $etaStr$covNotice$clutterNotice",
                             style = MaterialTheme.typography.labelSmall,
                             color = TextSecondary,
                             fontSize = 10.sp
@@ -1367,22 +1380,40 @@ private fun SourceHealthCard(sources: List<SourceHealth>, stats: VerificationSta
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 10.dp), color = SlateBorder.copy(alpha = 0.3f))
 
-            Text("🎯 ارزیابی کالیبراسیون MOS (فاز ۶):", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+            Text("🎯 ارزیابی صحت پیش‌بینی و کالیبراسیون MOS:", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
             Spacer(modifier = Modifier.height(4.dp))
+            val calStatusText = stats?.calibrationStatusText ?: if (Calibration.enabled) "جدول کالیبره فعال است (ایستگاه صفی‌آباد 40794)" else "کالیبراسیون غیرفعال"
             Text(
-                text = if (Calibration.enabled) "جدول کالیبره فعال است (ایستگاه صفی‌آباد 40794)" else "کالیبراسیون MOS غیرفعال یا هنوز بارگذاری نشده است.",
+                text = calStatusText,
                 style = MaterialTheme.typography.labelSmall,
                 color = if (Calibration.enabled) EmeraldOk else TextSecondary
             )
 
-            if (stats != null && stats.evaluatedForecasts > 0) {
-                Spacer(modifier = Modifier.height(6.dp))
-                Text(
-                    text = "ارزیابی روی دستگاه: ${stats.evaluatedForecasts} پیش‌بینی ثبت‌شده · امتیاز Brier: ${JalaliCalendar.formatNumber(stats.brierScore)}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = TextSecondary,
-                    fontSize = 10.sp
-                )
+            if (stats != null && stats.totalRecords > 0) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    val buckets = listOf(stats.lead6h, stats.lead12h, stats.lead24h)
+                    for (b in buckets) {
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(2.dp)
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(Color.Black.copy(alpha = 0.2f))
+                                .padding(4.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text("افق ${b.leadBucket}h", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = SkyAccent)
+                            Text("ثبت: ${b.totalForecasts}", fontSize = 9.sp, color = TextSecondary)
+                            Text("ارزیابی: ${b.evaluatedForecasts}", fontSize = 9.sp, color = TextSecondary)
+                            val brierStr = b.brierScore?.let { JalaliCalendar.formatNumber(it) } ?: "—"
+                            Text("Brier: $brierStr", fontSize = 9.sp, color = Color.White)
+                        }
+                    }
+                }
             }
         }
     }
@@ -1613,6 +1644,18 @@ private fun WeatherAlertBottomSheetContent(
 
         if (feedbackMessage != null) {
             Text("📢 $feedbackMessage", style = MaterialTheme.typography.labelSmall, color = AmberStorm)
+        }
+
+        Card(
+            colors = CardDefaults.cardColors(containerColor = SlateCard),
+            shape = RoundedCornerShape(8.dp)
+        ) {
+            Text(
+                text = "💡 برای دریافت به موقع اعلان‌ها در گوشی‌های شیائومی (HyperOS)، در تنظیمات باتری این اپ گزینه «بدون محدودیت» (No restrictions) را انتخاب کنید.",
+                style = MaterialTheme.typography.bodySmall,
+                color = TextSecondary,
+                modifier = Modifier.padding(10.dp)
+            )
         }
 
         Button(onClick = onTriggerAlert, modifier = Modifier.fillMaxWidth()) {
