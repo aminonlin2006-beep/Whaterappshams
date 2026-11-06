@@ -1,0 +1,8 @@
+{
+  "name": "هواشناسی امین",
+  "description": "سامانه جامع پایش راداری و دیدبانی هوشمند دزفول و دشت مرکزی خوزستان",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

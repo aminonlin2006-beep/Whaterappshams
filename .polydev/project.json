@@ -1,0 +1,13 @@
+{
+  "name": "mob",
+  "templateId": "empty",
+  "agent": {
+    "profile": "light",
+    "planApproval": true,
+    "askUser": true
+  },
+  "ai": {
+    "provider": "hnpqci26hm",
+    "model": "mercury-3"
+  }
+}
