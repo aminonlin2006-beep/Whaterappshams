@@ -19,25 +19,22 @@ class WeatherSyncWorker(
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         val manager = WeatherNotificationManager(applicationContext)
         val settings = manager.loadSettings()
-        if (!settings.isEnabled) {
-            return@withContext Result.success()
-        }
+        if (!settings.isEnabled) return@withContext Result.success()
 
         try {
             val repo = WeatherRepository(applicationContext)
-            val result = repo.refreshForecast()
-            val dashboard = result.getOrNull()
+            val dashboard = repo.refreshForecast().getOrNull()
+                ?: return@withContext (if (runAttemptCount < 3) Result.retry() else Result.success())
 
-            if (dashboard != null) {
-                val alertEval = manager.evaluateDashboard(dashboard, settings)
-                if (alertEval.shouldNotify) {
-                    manager.sendNotificationWithCooldown(alertEval, force = false)
-                }
+            val alertEval = manager.evaluateDashboard(dashboard, settings)
+            if (alertEval.shouldNotify) {
+                manager.sendNotificationWithCooldown(alertEval, force = false)
             }
             Result.success()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (_: Exception) {
-            // در صورت خطای اینترنت یا تایم‌اوت، در چرخهٔ بعدی تلاش مجدد انجام می‌شود
-            Result.retry()
+            if (runAttemptCount < 3) Result.retry() else Result.success()
         }
     }
 }

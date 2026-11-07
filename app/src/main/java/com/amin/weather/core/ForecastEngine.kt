@@ -212,7 +212,21 @@ object ForecastEngine {
             } else null
         }
 
-        val radarNowcast = RadarAnalyzer.analyzeNowcast(radarRes.data, steeringWind, modelDryNow, nowEpochSec)
+        var radarNowcast = RadarAnalyzer.analyzeNowcast(radarRes.data, steeringWind, modelDryNow, nowEpochSec)
+
+        val synopRainNow = synop != null &&
+            (nowEpochSec - synop.timeUtcEpochSec) < Tuning.SYNOP_FRESH_SEC &&
+            (synop.isRainNow || synop.isThunder)
+        val userRainNow = userObservation != null &&
+            (nowEpochSec - userObservation.createdAtEpochMs / 1000L) / 60L < Tuning.USER_REPORT_TTL_MIN &&
+            userObservation.phenomenon in Tuning.USER_RAIN_PHENOMENA
+        if (radarNowcast.available && (synopRainNow || userRainNow) &&
+            radarNowcast.maxDbzInTarget < Tuning.DBZ_LIGHT) {
+            radarNowcast = radarNowcast.copy(
+                available = false,
+                statusText = "رادار با مشاهدهٔ زمینی تناقض دارد (روی زمین باران گزارش شده ولی رادار اکویی نمی‌بیند)؛ در این نوبت از رادار استفاده نشد."
+            )
+        }
 
         if (context != null) {
             Calibration.load(context)
@@ -392,9 +406,7 @@ object ForecastEngine {
                 val ageMin = (nowEpochSec - (userObservation.createdAtEpochMs / 1000L)) / 60L
                 if (ageMin < Tuning.USER_REPORT_TTL_MIN) {
                     val k = 1.0 - (ageMin.toDouble() / Tuning.USER_REPORT_TTL_MIN)
-                    val isUserRain = userObservation.phenomenon.contains("باران") ||
-                            userObservation.phenomenon.contains("رگبار") ||
-                            userObservation.phenomenon.contains("رعدوبرق")
+                    val isUserRain = userObservation.phenomenon in Tuning.USER_RAIN_PHENOMENA
                     if (isUserRain && pArea != null) {
                         pArea = max(pArea, k * Tuning.USER_REPORT_MAX_PROB)
                     }
@@ -590,7 +602,7 @@ object ForecastEngine {
 
         val moistureInflowNext12h = checkMoistureInflowNext12h(steeringWind, nowEpochSec)
 
-        val alertVerdict = decideTier(radarNowcast, synop, rows, block6, block12, moistureInflowNext12h)
+        val alertVerdict = decideTier(radarNowcast, synop, rows, block6, block12, moistureInflowNext12h, userObservation)
 
         val rangesMap = mutableMapOf<ForecastRange, List<ForecastRow>>()
         rangesMap[ForecastRange.HOURLY] = rows
@@ -775,7 +787,8 @@ object ForecastEngine {
         rows: List<ForecastRow>,
         block6: BlockStats? = null,
         block12: BlockStats? = null,
-        moistureInflowNext12h: Boolean = false
+        moistureInflowNext12h: Boolean = false,
+        userObservation: SkyObservationReport? = null
     ): VerdictInfo {
         val radarOk = radar.available
         val firstArrival = radar.firstArrival
@@ -803,8 +816,14 @@ object ForecastEngine {
         val p6hWet = block6?.pWet ?: (rows.take(6).mapNotNull { it.probArea?.let { p -> p / 100.0 } }.maxOrNull() ?: 0.0)
         val isOrangeProb = p6hWet >= Tuning.ORANGE_PROB_WET_6H
 
-        if (isOrangeRadar || isOrangeApproaching || isOrangeSynop || isOrangeProb) {
+        val userAgeMin = userObservation?.let { (System.currentTimeMillis() - it.createdAtEpochMs) / 60000L }
+        val isOrangeUser = userObservation != null && userAgeMin != null &&
+            userAgeMin < Tuning.USER_REPORT_TTL_MIN &&
+            userObservation.phenomenon in Tuning.USER_RAIN_PHENOMENA
+
+        if (isOrangeRadar || isOrangeApproaching || isOrangeSynop || isOrangeProb || isOrangeUser) {
             val text = when {
+                isOrangeUser -> "هشدار نارنجی: بارش در محل شما (گزارش خودتان: ${userObservation?.phenomenon}، $userAgeMin دقیقه پیش)."
                 isOrangeApproaching -> "هشدار نارنجی: سلول بارشی با قدرت ${firstArrival?.maxDbz} dBZ در ${firstArrival?.distKm?.roundToInt()} کیلومتری (${firstArrival?.directionFa}) به سمت محدوده در حرکت است (ورود محتمل: ${firstArrival?.etaMinLow} تا ${firstArrival?.etaMinHigh} دقیقه دیگر)."
                 isOrangeRadar -> "هشدار نارنجی: لکه‌های بارشی فعال در اسکن راداری محدوده ۲۰ کیلومتری دیده می‌شود."
                 isOrangeSynop -> "هشدار نارنجی: ثبت بارش فعال در ایستگاه دیدبانی صفی‌آباد."
@@ -819,12 +838,14 @@ object ForecastEngine {
         val isYellowMoistProb = moistureInflowNext12h && p12hWet >= Tuning.YELLOW_MOIST_MIN_PROB
         val isYellowConv = rows.take(12).any { (it.convScore ?: 0.0) >= 60.0 }
         val isYellowMiss = radarOk && radar.cells.any { it.state == CellApproachState.WILL_MISS && (it.minDistanceKm != null && it.minDistanceKm <= Tuning.TARGET_RADIUS_KM + 15.0) }
-        val isYellowUpwindEcho = radarOk && radar.upwindStrongEcho
+        val isYellowUpwindEcho = radarOk && radar.cells.any {
+            it.state == CellApproachState.APPROACHING && it.maxDbz >= Tuning.DBZ_STRONG
+        }
         val isYellowSynopRecent = synop != null && (System.currentTimeMillis()/1000L - synop.timeUtcEpochSec < Tuning.SYNOP_FRESH_SEC) && synop.isRecentPrecip
 
         if (isYellowProb || isYellowMoistProb || isYellowConv || isYellowMiss || isYellowUpwindEcho || isYellowSynopRecent) {
             val text = when {
-                isYellowUpwindEcho -> "هشدار زرد: پژواک قوی راداری در سمت غرب/جنوب‌غرب در فاصله ۵۰ تا ۱۵۰ کیلومتری رصد شد."
+                isYellowUpwindEcho -> "هشدار زرد: تودهٔ بارشی قوی در فاصلهٔ دور به سمت محدوده در حرکت است."
                 isYellowSynopRecent -> "هشدار زرد: ثبت بارش در ساعت اخیر در دیدبانی ایستگاه صفی‌آباد."
                 isYellowConv -> "هشدار زرد: افزایش پتانسیل همرفتی و ناپایداری جوی طی ۱۲ ساعت آینده."
                 isYellowMiss -> "هشدار زرد: توده بارشی از حاشیه دایره ۲۰ کیلومتری در حال عبور است."
@@ -834,11 +855,32 @@ object ForecastEngine {
             return VerdictInfo(AlertTier.YELLOW, text, "اوضاع جوی به طور مستمر رصد می‌شود.")
         }
 
-        // GREEN default
+        val nowSec = System.currentTimeMillis() / 1000L
+        val synopFresh = synop != null && (nowSec - synop.timeUtcEpochSec) < Tuning.SYNOP_FRESH_SEC
+        val modelOk = rows.take(12).any { it.probArea != null }
+
+        if (!modelOk || (!radarOk && !synopFresh)) {
+            val missing = buildList {
+                if (!modelOk) add("مدل‌های پیش‌بینی")
+                if (!radarOk) add("رادار")
+                if (!synopFresh) add("دیدبانی صفی‌آباد")
+            }.joinToString("، ")
+            return VerdictInfo(
+                AlertTier.UNKNOWN,
+                "وضعیت زنده نامشخص است: $missing در دسترس نیست.",
+                if (modelOk) "پیش‌بینی مدل‌ها برای ۱۲ ساعت آینده نشانهٔ بارش قابل‌توجهی ندارد، اما مشاهدهٔ زنده‌ای برای تأیید نیست."
+                else "به‌محض برقراری اتصال دوباره بررسی می‌شود."
+            )
+        }
+
+        val liveSources = buildList {
+            if (radarOk) add("رادار")
+            if (synopFresh) add("دیدبانی صفی‌آباد")
+        }.joinToString(" و ")
         return VerdictInfo(
             AlertTier.GREEN,
-            "آسمان آرام و پایدار در محدوده ۲۰ کیلومتری شمس‌آباد؛ هیچ توده بارشی فعالی رصد نشد.",
-            "پایش مستمر با رادار و دیدبانی صفی‌آباد برقرار است."
+            "در دایرهٔ ۲۰ کیلومتری شمس‌آباد بارشی دیده نمی‌شود و مدل‌ها برای ۱۲ ساعت آینده بارش قابل‌توجهی نشان نمی‌دهند.",
+            "مبنا: $liveSources و مدل‌های پیش‌بینی."
         )
     }
 

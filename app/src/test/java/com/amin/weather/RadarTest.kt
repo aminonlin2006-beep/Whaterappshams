@@ -197,6 +197,47 @@ class RadarTest {
             rows = emptyList()
         )
 
-        assertEquals(AlertTier.GREEN, verdict.tier)
+        assertEquals(AlertTier.UNKNOWN, verdict.tier)
+    }
+
+    @Test
+    fun testAdjustEtaForFrameAge() {
+        val t = RadarAnalyzer.TupleEta(CellApproachState.APPROACHING, 40, 60, 5.0)
+        val res25 = RadarAnalyzer.adjustEtaForFrameAge(t, 25)
+        assertEquals(CellApproachState.APPROACHING, res25.state)
+        assertEquals(15, res25.etaLow)
+        assertEquals(35, res25.etaHigh)
+
+        val res70 = RadarAnalyzer.adjustEtaForFrameAge(t, 70)
+        assertEquals(CellApproachState.APPROACHING, res70.state)
+        assertEquals(0, res70.etaLow)
+        assertEquals(0, res70.etaHigh)
+    }
+
+    @Test
+    fun testFrozenRadarDetection() {
+        val nowSec = 100000L
+        val wetGrid = IntArray(512 * 512) { -1 }
+        for (i in 0 until 50) {
+            wetGrid[i * 512 + i] = 30
+        }
+        val wetFrames = listOf(
+            RadarFrame(nowSec - 1200L, wetGrid.clone()),
+            RadarFrame(nowSec - 600L, wetGrid.clone()),
+            RadarFrame(nowSec, wetGrid.clone())
+        )
+        val fetchWet = RadarFetch(wetFrames, lastFrameAgeMin = 5, coverageVerified = true)
+        val resWet = RadarAnalyzer.analyzeNowcast(fetchWet, nowSec = nowSec)
+        assertFalse("Radar with identical wet frames must be unavailable (frozen)", resWet.available)
+
+        val emptyGrid = IntArray(512 * 512) { -1 }
+        val emptyFrames = listOf(
+            RadarFrame(nowSec - 1200L, emptyGrid.clone()),
+            RadarFrame(nowSec - 600L, emptyGrid.clone()),
+            RadarFrame(nowSec, emptyGrid.clone())
+        )
+        val fetchEmpty = RadarFetch(emptyFrames, lastFrameAgeMin = 5, coverageVerified = true)
+        val resEmpty = RadarAnalyzer.analyzeNowcast(fetchEmpty, nowSec = nowSec)
+        assertTrue("Radar with identical empty frames should be available", resEmpty.available)
     }
 }

@@ -148,13 +148,13 @@ class WeatherNotificationManager(private val context: Context) {
         }
 
         val verdict = dashboard.verdict
-        if (verdict.tier == AlertTier.GREEN) {
+        if (verdict.tier == AlertTier.GREEN || verdict.tier == AlertTier.UNKNOWN) {
             return AlertEvaluationResult(
                 shouldNotify = false,
                 title = verdict.tier.title,
                 summary = verdict.text,
                 details = emptyList(),
-                alertTier = AlertTier.GREEN
+                alertTier = verdict.tier
             )
         }
 

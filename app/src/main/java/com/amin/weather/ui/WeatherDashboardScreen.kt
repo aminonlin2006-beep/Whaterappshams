@@ -686,12 +686,14 @@ private fun HeroAlertTierCard(
         AlertTier.ORANGE -> Color(0xFFF97316)
         AlertTier.YELLOW -> AmberStorm
         AlertTier.GREEN -> EmeraldOk
+        AlertTier.UNKNOWN -> Color(0xFF9CA3AF)
     }
     val icon = when (tier) {
         AlertTier.RED -> Icons.Default.Warning
         AlertTier.ORANGE -> Icons.Default.Bolt
         AlertTier.YELLOW -> Icons.Default.Visibility
         AlertTier.GREEN -> Icons.Default.CheckCircle
+        AlertTier.UNKNOWN -> Icons.Default.HelpOutline
     }
 
     val curTemp = synop?.tempC ?: modelCurrent?.tempC
@@ -1519,6 +1521,7 @@ private fun RegionCoverageBottomSheetContent(onDismiss: () -> Unit) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 private fun SkyObservationBottomSheetContent(
     existingReport: SkyObservationReport?,
@@ -1529,7 +1532,7 @@ private fun SkyObservationBottomSheetContent(
     val context = LocalContext.current
     var photoBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var direction by remember { mutableStateOf("بالای سر") }
-    var phenomenon by remember { mutableStateOf("ابرهای تیره و جوششی") }
+    var phenomenon by remember { mutableStateOf("") }
     var userTempStr by remember { mutableStateOf("") }
     var notes by remember { mutableStateOf("") }
 
@@ -1554,12 +1557,20 @@ private fun SkyObservationBottomSheetContent(
         Text("📷 دیده‌بان آسمان و ثبت مشاهده میدانی", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = SkyAccent)
         Text("گزارش شما برای ۶۰ دقیقه در کالیبراسیون رادار و پیش‌بینی استفاده می‌شود.", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
 
-        OutlinedTextField(
-            value = phenomenon,
-            onValueChange = { phenomenon = it },
-            label = { Text("پدیده مشهود (باران، رگبار، رعدوبرق، گردوخاک)") },
-            modifier = Modifier.fillMaxWidth()
-        )
+        Text("الان چه می‌بینید؟", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, color = TextPrimary)
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Tuning.USER_PHENOMENA.forEach { p ->
+                FilterChip(
+                    selected = (phenomenon == p),
+                    onClick = { phenomenon = p },
+                    label = { Text(p) }
+                )
+            }
+        }
 
         OutlinedTextField(
             value = direction,
@@ -1602,6 +1613,7 @@ private fun SkyObservationBottomSheetContent(
                 onClick = {
                     onSubmit(photoBitmap, direction, phenomenon, userTempStr.toDoubleOrNull(), notes)
                 },
+                enabled = phenomenon.isNotBlank(),
                 modifier = Modifier.weight(1f)
             ) {
                 Text("ثبت و کالیبره")

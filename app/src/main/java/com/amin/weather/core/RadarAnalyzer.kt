@@ -201,6 +201,26 @@ object RadarAnalyzer {
         val lastFrame = frames.last()
         val frameAgeMin = fetch.lastFrameAgeMin
 
+        // اگر چند فریم آخر پیکسل‌به‌پیکسل یکسان‌اند و اکوی بارشی دارند، رادار یخ‌زده است
+        if (frames.size >= 2) {
+            val first = frames.first().dbzGrid
+            var wetPixels = 0
+            for (idx in first.indices) if (first[idx] >= Tuning.DBZ_RAIN) wetPixels++
+            val allIdentical = frames.drop(1).all { it.dbzGrid.contentEquals(first) }
+            if (allIdentical && wetPixels >= Tuning.RADAR_FROZEN_MIN_WET_PIXELS) {
+                return RadarNowcastResult(
+                    available = false,
+                    frameAgeMin = fetch.lastFrameAgeMin,
+                    coverageOk = fetch.coverageVerified,
+                    maxDbzInTarget = -1,
+                    wetFractionInTarget = 0.0,
+                    rainRateInTargetMmH = 0.0,
+                    statusText = "رادار به‌روز نمی‌شود (${frames.size} تصویر آخر کاملاً یکسان‌اند)؛ از رادار استفاده نشد.",
+                    coverageVerified = fetch.coverageVerified
+                )
+            }
+        }
+
         // Clutter filter
         val grid = lastFrame.dbzGrid.clone()
         var clutterPixelsRemoved = 0
@@ -335,6 +355,9 @@ object RadarAnalyzer {
                 TupleEta(CellApproachState.UNKNOWN_MOTION, null, null, null)
             }
 
+            // زمان ورود از «الان» حساب شود، نه از زمان تصویر رادار
+            val etaFromNow = adjustEtaForFrameAge(tupleEta, frameAgeMin)
+
             parsedCells.add(
                 RadarCellInfo(
                     id = "C$cellCounter",
@@ -348,10 +371,10 @@ object RadarAnalyzer {
                     radiusKm = c.radiusKm,
                     speedKmh = cellSpeed,
                     moveDirectionToDeg = cellDirTo,
-                    state = tupleEta.state,
-                    etaMinLow = tupleEta.etaLow,
-                    etaMinHigh = tupleEta.etaHigh,
-                    minDistanceKm = tupleEta.dMinKm,
+                    state = etaFromNow.state,
+                    etaMinLow = etaFromNow.etaLow,
+                    etaMinHigh = etaFromNow.etaHigh,
+                    minDistanceKm = etaFromNow.dMinKm,
                     motionSource = motionSource,
                     xLocalKm = c.xKm,
                     yLocalKm = c.yKm
@@ -371,11 +394,17 @@ object RadarAnalyzer {
 
         val statusText = buildString {
             when {
-                maxDbzTarget >= Tuning.DBZ_SEVERE -> append("رادار زنده: لکه بارشی شدیدی با قدرت $maxDbzTarget dBZ داخل دایره ۲۰km شمس‌آباد فعال است.")
-                maxDbzTarget >= Tuning.DBZ_RAIN -> append("رادار زنده: لکه بارشی با قدرت $maxDbzTarget dBZ داخل دایره ۲۰km شمس‌آباد رصد شد.")
-                firstArrival != null -> append("رادار زنده: توده بارشی ${firstArrival.maxDbz} dBZ در ${firstArrival.distKm.toInt()}km (${firstArrival.directionFa})، ورود محتمل بین ${firstArrival.etaMinLow} تا ${firstArrival.etaMinHigh} دقیقه دیگر.")
-                shownCells.isNotEmpty() -> append("رادار زنده: ${shownCells.size} توده بارشی خارج از دایره ۲۰km شمس‌آباد رصد شد.")
-                else -> append("رادار زنده: شعاع پایش ۲۰ کیلومتری شمس‌آباد پاک و بدون لکه بارشی است.")
+                maxDbzTarget >= Tuning.DBZ_SEVERE -> append("رادار: لکه بارشی شدیدی با قدرت $maxDbzTarget dBZ داخل دایره ۲۰km شمس‌آباد فعال است.")
+                maxDbzTarget >= Tuning.DBZ_RAIN -> append("رادار: لکه بارشی با قدرت $maxDbzTarget dBZ داخل دایره ۲۰km شمس‌آباد رصد شد.")
+                firstArrival != null -> {
+                    if (firstArrival.etaMinHigh == 0) {
+                        append("رادار: توده بارشی ${firstArrival.maxDbz} dBZ احتمالاً هم‌اکنون به محدوده رسیده است.")
+                    } else {
+                        append("رادار: توده بارشی ${firstArrival.maxDbz} dBZ در ${firstArrival.distKm.toInt()}km (${firstArrival.directionFa})، ورود محتمل بین ${firstArrival.etaMinLow} تا ${firstArrival.etaMinHigh} دقیقه دیگر.")
+                    }
+                }
+                shownCells.isNotEmpty() -> append("رادار: ${shownCells.size} توده بارشی خارج از دایره ۲۰km شمس‌آباد رصد شد.")
+                else -> append("رادار: در تصویر آخر، لکهٔ بارشی در دایرهٔ ۲۰ کیلومتری دیده نمی‌شود.")
             }
             if (clutterPixelsRemoved > 0) {
                 append(" ($clutterPixelsRemoved پیکسل کلاتر حذف شد)")
@@ -383,6 +412,7 @@ object RadarAnalyzer {
             if (!fetch.coverageVerified) {
                 append(" (پوشش رادار تایید نشده)")
             }
+            append(" (تصویر رادار ${frameAgeMin} دقیقه پیش)")
         }
 
         return RadarNowcastResult(
@@ -400,6 +430,20 @@ object RadarAnalyzer {
             coverageVerified = fetch.coverageVerified,
             clutterPixelsRemoved = clutterPixelsRemoved
         )
+    }
+
+    fun adjustEtaForFrameAge(tupleEta: TupleEta, frameAgeMin: Int): TupleEta {
+        return if (tupleEta.state == CellApproachState.APPROACHING &&
+            tupleEta.etaLow != null && tupleEta.etaHigh != null) {
+            val lo = tupleEta.etaLow - frameAgeMin
+            val hi = tupleEta.etaHigh - frameAgeMin
+            if (hi <= 0) {
+                // احتمالاً تا الان رسیده است
+                TupleEta(CellApproachState.APPROACHING, 0, 0, tupleEta.dMinKm)
+            } else {
+                TupleEta(CellApproachState.APPROACHING, lo.coerceAtLeast(0), hi, tupleEta.dMinKm)
+            }
+        } else tupleEta
     }
 
     fun computeApproachEta(

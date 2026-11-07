@@ -6,6 +6,7 @@ enum class AlertTier(
     val hexColor: String
 ) {
     GREEN("green", "آسمان آرام و پایدار", "#10B981"),
+    UNKNOWN("unknown", "وضعیت زنده نامشخص", "#9CA3AF"),
     YELLOW("yellow", "احتمال رگبار موضعی و ناپایداری جوی", "#F59E0B"),
     ORANGE("orange", "توده بارشی در راه", "#F97316"),
     RED("red", "هشدار فوری بارش/رعدوبرق در محدوده", "#EF4444")
@@ -112,7 +113,7 @@ data class SkyObservationReport(
     val id: String = "",
     val photoPath: String? = null,
     val direction: String = "بالای سر",
-    val phenomenon: String = "ابرهای تیره و جوششی",
+    val phenomenon: String = "",
     val userTemp: Double? = null,
     val notes: String = "",
     val timestampIran: String = "",

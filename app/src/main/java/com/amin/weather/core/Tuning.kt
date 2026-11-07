@@ -28,6 +28,7 @@ object Tuning {
     // اصلاحیهٔ دوم
     const val RADAR_FRAMES_USED = 3              // فریم‌های لازم برای ردیابی و کلاتر
     const val RADAR_TILE_CACHE_MAX_AGE_MIN = 180
+    const val RADAR_FROZEN_MIN_WET_PIXELS = 20   // تصاویر خالیِ یکسان طبیعی‌اند؛ فقط تصاویر دارای اکو بررسی شوند
     const val CLUTTER_FRAMES = 3                 // جایگزین CLUTTER_MIN_FRAMES
     const val CLUTTER_MAX_DBZ_RANGE = 3          // اختلاف بیشینه و کمینهٔ dBZ پیکسل در فریم‌ها
     const val TRACK_FRAME_GAP_MIN_MIN = 5
@@ -70,6 +71,8 @@ object Tuning {
     // گزارش کاربر
     const val USER_REPORT_TTL_MIN = 60
     const val USER_REPORT_MAX_PROB = 0.85
+    val USER_PHENOMENA = listOf("باران", "رگبار", "رعدوبرق", "تگرگ", "ابری بدون بارش", "صاف", "گردوخاک")
+    val USER_RAIN_PHENOMENA = setOf("باران", "رگبار", "رعدوبرق", "تگرگ")
 
     // ورود رطوبت تراز ۸۵۰
     const val MOIST_INFLOW_MIN_KMH = 20.0

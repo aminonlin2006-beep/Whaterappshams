@@ -229,6 +229,7 @@ class WeatherRepository(private val context: Context) {
             "red" -> AlertTier.RED
             "orange" -> AlertTier.ORANGE
             "yellow" -> AlertTier.YELLOW
+            "unknown" -> AlertTier.UNKNOWN
             else -> AlertTier.GREEN
         }
         val verdict = VerdictInfo(alertTier, vObj.optString("text", ""), vObj.optString("advisoryNote", ""))
