@@ -34,6 +34,7 @@ class WeatherNotificationManager(private val context: Context) {
         const val CHANNEL_ID = "shamsabad_weather_alerts"
         const val CHANNEL_NAME = "هشدارهای هواشناسی ۲۰ کیلومتری شمس‌آباد"
         const val NOTIFICATION_ID = 1001
+        const val PERIODIC_WORK_NAME = "shamsabad_weather_sync_work"
         private const val PREFS_NAME = "shamsabad_alert_prefs_v5"
     }
 
@@ -73,35 +74,51 @@ class WeatherNotificationManager(private val context: Context) {
     fun schedulePeriodicSync() {
         val settings = loadSettings()
         if (!settings.isEnabled) return
-        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? android.app.AlarmManager ?: return
-        val intent = Intent(context, WeatherAlertReceiver::class.java)
-        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        } else {
-            PendingIntent.FLAG_UPDATE_CURRENT
-        }
-        val pendingIntent = PendingIntent.getBroadcast(context, 2001, intent, flags)
-        val triggerAt = System.currentTimeMillis() + Tuning.REFRESH_INTERVAL_MIN * 60 * 1000L
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            alarmManager.setAndAllowWhileIdle(android.app.AlarmManager.RTC_WAKEUP, triggerAt, pendingIntent)
-        } else {
-            alarmManager.set(android.app.AlarmManager.RTC_WAKEUP, triggerAt, pendingIntent)
-        }
+        try {
+            val constraints = androidx.work.Constraints.Builder()
+                .setRequiredNetworkType(androidx.work.NetworkType.CONNECTED)
+                .build()
+
+            val intervalMin = Tuning.REFRESH_INTERVAL_MIN.toLong().coerceAtLeast(15L)
+            val workRequest = androidx.work.PeriodicWorkRequestBuilder<WeatherSyncWorker>(
+                intervalMin,
+                java.util.concurrent.TimeUnit.MINUTES
+            )
+                .setConstraints(constraints)
+                .build()
+
+            androidx.work.WorkManager.getInstance(context).enqueueUniquePeriodicWork(
+                PERIODIC_WORK_NAME,
+                androidx.work.ExistingPeriodicWorkPolicy.UPDATE,
+                workRequest
+            )
+        } catch (_: Exception) {}
+
+        cancelAlarmManagerSync()
     }
 
     fun cancelPeriodicSync() {
-        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? android.app.AlarmManager ?: return
-        val intent = Intent(context, WeatherAlertReceiver::class.java)
-        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
-        } else {
-            PendingIntent.FLAG_NO_CREATE
-        }
-        val pendingIntent = PendingIntent.getBroadcast(context, 2001, intent, flags)
-        if (pendingIntent != null) {
-            alarmManager.cancel(pendingIntent)
-            pendingIntent.cancel()
-        }
+        try {
+            androidx.work.WorkManager.getInstance(context).cancelUniqueWork(PERIODIC_WORK_NAME)
+        } catch (_: Exception) {}
+        cancelAlarmManagerSync()
+    }
+
+    private fun cancelAlarmManagerSync() {
+        try {
+            val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? android.app.AlarmManager ?: return
+            val intent = Intent(context, WeatherAlertReceiver::class.java)
+            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
+            } else {
+                PendingIntent.FLAG_NO_CREATE
+            }
+            val pendingIntent = PendingIntent.getBroadcast(context, 2001, intent, flags)
+            if (pendingIntent != null) {
+                alarmManager.cancel(pendingIntent)
+                pendingIntent.cancel()
+            }
+        } catch (_: Exception) {}
     }
 
     private fun createNotificationChannel() {

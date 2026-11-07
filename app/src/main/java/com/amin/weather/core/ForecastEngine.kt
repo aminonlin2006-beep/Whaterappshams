@@ -8,6 +8,9 @@ import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 import kotlin.math.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 
 object ForecastEngine {
 
@@ -145,37 +148,40 @@ object ForecastEngine {
     /**
      * Builds complete forecast dashboard dataset
      */
-    fun buildDashboardData(
+    suspend fun buildDashboardData(
         context: Context? = null,
         userObservation: SkyObservationReport? = null
-    ): ForecastDashboard {
+    ): ForecastDashboard = coroutineScope {
         val sourceHealthList = mutableListOf<SourceHealth>()
 
         val cacheDir: File? = context?.filesDir
 
-        // 1. Fetch data from clients
-        val neighRes = OpenMeteoClient.fetchNeighbourhood()
+        // 1. Fetch data from clients concurrently in parallel
+        val neighDeferred = async(Dispatchers.IO) { OpenMeteoClient.fetchNeighbourhood() }
+        val centerDeferred = async(Dispatchers.IO) { OpenMeteoClient.fetchCenterDetail() }
+        val liftedIndexDeferred = async(Dispatchers.IO) { OpenMeteoClient.fetchLiftedIndex() }
+        val steeringDeferred = async(Dispatchers.IO) { OpenMeteoClient.fetchSteeringWind() }
+        val ensEcmwfDeferred = async(Dispatchers.IO) { OpenMeteoClient.fetchEnsemble("ecmwf_ifs025") }
+        val ensIconDeferred = async(Dispatchers.IO) { OpenMeteoClient.fetchEnsemble("icon_seamless") }
+        val synopDeferred = async(Dispatchers.IO) { SynopClient.fetchLatestSynop(cacheDir) }
+        val radarDeferred = async(Dispatchers.IO) { RadarClient.fetchRadarFrames(cacheDir) }
+
+        val neighRes = neighDeferred.await()
+        val centerRes = centerDeferred.await()
+        val liftedIndexRes = liftedIndexDeferred.await()
+        val steeringRes = steeringDeferred.await()
+        val ensEcmwfRes = ensEcmwfDeferred.await()
+        val ensIconRes = ensIconDeferred.await()
+        val synopRes = synopDeferred.await()
+        val radarRes = radarDeferred.await()
+
         sourceHealthList.add(SourceHealth("open-meteo/neighbourhood", neighRes.status, neighRes.message))
-
-        val centerRes = OpenMeteoClient.fetchCenterDetail()
         sourceHealthList.add(SourceHealth("open-meteo/center", centerRes.status, centerRes.message))
-
-        val liftedIndexRes = OpenMeteoClient.fetchLiftedIndex()
         sourceHealthList.add(SourceHealth("open-meteo/lifted_index", liftedIndexRes.status, liftedIndexRes.message))
-
-        val steeringRes = OpenMeteoClient.fetchSteeringWind()
         sourceHealthList.add(SourceHealth("open-meteo/steering", steeringRes.status, steeringRes.message))
-
-        val ensEcmwfRes = OpenMeteoClient.fetchEnsemble("ecmwf_ifs025")
         sourceHealthList.add(SourceHealth("ensemble/ecmwf", ensEcmwfRes.status, ensEcmwfRes.message))
-
-        val ensIconRes = OpenMeteoClient.fetchEnsemble("icon_seamless")
         sourceHealthList.add(SourceHealth("ensemble/icon", ensIconRes.status, ensIconRes.message))
-
-        val synopRes = SynopClient.fetchLatestSynop(cacheDir)
         sourceHealthList.add(SourceHealth("ogimet/synop", synopRes.status, synopRes.message))
-
-        val radarRes = RadarClient.fetchRadarFrames(cacheDir)
         sourceHealthList.add(SourceHealth("rainviewer/radar", radarRes.status, radarRes.message))
 
         val steeringWind = steeringRes.data
@@ -722,7 +728,7 @@ object ForecastEngine {
             wettestDirectionFa = radarNowcast.firstArrival?.directionFa
         )
 
-        return ForecastDashboard(
+        ForecastDashboard(
             location = "شعاع ۲۰ کیلومتری شمس‌آباد دزفول",
             lat = RegionConfig.CENTER.lat,
             lon = RegionConfig.CENTER.lon,

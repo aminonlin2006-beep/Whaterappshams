@@ -3,12 +3,15 @@ package com.amin.weather.core
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
+import androidx.work.Constraints
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
 
 /**
- * دریافت‌کننده پس‌زمینه برای پایش دوره‌ای وضعیت رادار، شبکه دیدبانی و ارسال هشدارهای هوشمند
+ * دریافت‌کننده پس‌زمینه (مثلاً هنگام روشن شدن گوشی BOOT_COMPLETED).
+ * به جای انجام کارهای سنگین و نامطمئن شبکه داخل برودکست‌رسیور با محدودیت ۱۰ ثانیه‌ای،
+ * وظیفه به سرعت به WorkManager محول می‌شود تا پایدار، بدون قطعی و با مدیریت هوشمند انرژی انجام گیرد.
  */
 class WeatherAlertReceiver : BroadcastReceiver() {
 
@@ -17,25 +20,18 @@ class WeatherAlertReceiver : BroadcastReceiver() {
         val settings = manager.loadSettings()
         if (!settings.isEnabled) return
 
-        val pendingResult = goAsync()
-        CoroutineScope(Dispatchers.IO).launch {
-            try {
-                val repo = WeatherRepository(context)
-                val result = repo.refreshForecast()
-                val dashboard = result.getOrNull()
-                if (dashboard != null) {
-                    val alertEval = manager.evaluateDashboard(dashboard, settings)
-                    if (alertEval.shouldNotify) {
-                        manager.sendNotificationWithCooldown(alertEval, force = false)
-                    }
-                }
-            } catch (_: Exception) {
-                // خطای شبکه در پس‌زمینه؛ تلاش در گام بعدی
-            } finally {
-                // برنامه‌ریزی زنگ بیدارباش گام بعد
-                manager.schedulePeriodicSync()
-                pendingResult.finish()
-            }
-        }
+        // اطمینان از برقراری پایش دوره‌ای
+        manager.schedulePeriodicSync()
+
+        // اجرای یک نوبت پایش فوری در بستر WorkManager
+        try {
+            val constraints = Constraints.Builder()
+                .setRequiredNetworkType(NetworkType.CONNECTED)
+                .build()
+            val immediateWork = OneTimeWorkRequestBuilder<WeatherSyncWorker>()
+                .setConstraints(constraints)
+                .build()
+            WorkManager.getInstance(context).enqueue(immediateWork)
+        } catch (_: Exception) {}
     }
 }
