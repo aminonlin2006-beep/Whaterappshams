@@ -1244,6 +1244,20 @@ private fun SynopObsCard(synop: SynopObs?, modelCurrent: ModelCurrent?) {
             Spacer(modifier = Modifier.height(10.dp))
 
             if (synop != null) {
+                val nowSec = System.currentTimeMillis() / 1000L
+                val ageMin = ((nowSec - synop.timeUtcEpochSec) / 60L).toInt()
+                val isFresh = ageMin <= Tuning.SYNOP_DISPLAY_FRESH_MIN
+                val obsTimeIran = ForecastEngine.epochToIran(synop.timeUtcEpochSec)
+
+                Text(
+                    text = if (isFresh) "گزارش ساعت $obsTimeIran (${JalaliCalendar.formatNumber(ageMin.toDouble())} دقیقه پیش)"
+                           else "⚠️ آخرین گزارش موجود: ساعت $obsTimeIran (${formatAge(ageMin)} پیش) — کهنه است و برای وضعیت فعلی استفاده نمی‌شود",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (isFresh) TextSecondary else AmberStorm
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween
@@ -1253,19 +1267,45 @@ private fun SynopObsCard(synop: SynopObs?, modelCurrent: ModelCurrent?) {
                         Text("نقطه شبنم: ${JalaliCalendar.formatNumber(synop.dewC)}°C", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
                         Text("رطوبت نسبی: ${JalaliCalendar.formatNumber(synop.rh)}٪", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
                     }
-                    Column(horizontalAlignment = Alignment.End) {
-                        val precipStr = synop.precipMm?.let { "${JalaliCalendar.formatNumber(it)} mm" } ?: "نامشخص"
-                        val periodStr = synop.precipPeriodH?.let { "در $it ساعت گذشته" } ?: "دوره نامشخص"
-                        Text("بارش: $precipStr", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, color = SkyAccent)
-                        Text("دوره: $periodStr", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
-                    }
                 }
-                Spacer(modifier = Modifier.height(8.dp))
+
+                Spacer(modifier = Modifier.height(6.dp))
+
+                val precipText = when {
+                    synop.precipMm != null && synop.precipPeriodH != null ->
+                        "بارش انباشته: ${JalaliCalendar.formatNumber(synop.precipMm)} mm در ${JalaliCalendar.formatNumber(synop.precipPeriodH)} ساعت منتهی به ساعت $obsTimeIran"
+                    synop.precipMm != null && synop.precipPeriodH == null ->
+                        "بارش انباشته: ${JalaliCalendar.formatNumber(synop.precipMm)} mm (دوره نامشخص، تا ساعت $obsTimeIran)"
+                    else ->
+                        "بارش انباشته: گزارش نشده"
+                }
                 Text(
-                    text = "هوای حاضر: ${if (synop.isRainNow) "بارش فعال 🌧️" else if (synop.isThunder) "رعدوبرق ⚡" else if (synop.isRecentPrecip) "بارش در ساعت اخیر 🌦️" else "بدون بارش ☀️"}",
+                    text = precipText,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (synop.precipMm != null && synop.precipMm > 0.0) SkyAccent else TextSecondary
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                val presentText = when {
+                    !isFresh -> "هوای حاضر: نامشخص (گزارش تازه‌ای نیست)"
+                    synop.isThunder -> "هوای حاضر: رعدوبرق ⚡"
+                    synop.isRainNow -> "هوای حاضر: بارش فعال 🌧️"
+                    synop.isRecentPrecip -> "هوای حاضر: بارش در ساعت قبل از گزارش 🌦️"
+                    synop.ww != null -> "هوای حاضر: بدون بارش در لحظهٔ گزارش"
+                    synop.iX == 2 || synop.iX == 5 -> "هوای حاضر: پدیدهٔ قابل‌گزارشی ثبت نشده"
+                    else -> "هوای حاضر: گزارش نشده"
+                }
+                val presentColor = when {
+                    !isFresh || synop.ww == null -> TextSecondary
+                    synop.isRainNow || synop.isThunder -> SkyAccent
+                    else -> EmeraldOk
+                }
+                Text(
+                    text = presentText,
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.SemiBold,
-                    color = if (synop.isRainNow || synop.isThunder) SkyAccent else EmeraldOk
+                    color = presentColor
                 )
             } else {
                 Text(
@@ -1301,6 +1341,19 @@ private fun SynopObsCard(synop: SynopObs?, modelCurrent: ModelCurrent?) {
                 }
             }
         }
+    }
+}
+
+private fun formatAge(min: Int): String {
+    if (min < 60) {
+        return "${JalaliCalendar.formatNumber(min)} دقیقه"
+    }
+    val h = min / 60
+    val m = min % 60
+    return if (m == 0) {
+        "${JalaliCalendar.formatNumber(h)} ساعت"
+    } else {
+        "${JalaliCalendar.formatNumber(h)} ساعت و ${JalaliCalendar.formatNumber(m)} دقیقه"
     }
 }
 

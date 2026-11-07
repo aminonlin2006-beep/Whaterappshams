@@ -114,6 +114,11 @@ object JalaliCalendar {
         return toPersianDigits(str)
     }
 
+    fun formatNumber(v: Int?): String {
+        if (v == null) return "—"
+        return toPersianDigits(v.toString())
+    }
+
     private val DT_REGEX = Regex("""^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})""")
     private val DATE_ONLY_REGEX = Regex("""^(\d{4})-(\d{2})-(\d{2})$""")
 

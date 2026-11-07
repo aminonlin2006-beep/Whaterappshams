@@ -72,4 +72,44 @@ class SynopClientTest {
         assertNotNull(obs)
         assertNull(obs!!.precipMm)
     }
+
+    @Test
+    fun testParseSynopWithoutGroup7IX3() {
+        val line = "40794,2026,11,06,12,00,AAXX 06121 40794 13970 31205 10183 20155="
+        val obs = SynopClient.parseSynopLine(line)
+
+        assertNotNull(obs)
+        assertEquals(3, obs!!.iX)
+        assertNull(obs.ww)
+        assertFalse(obs.isRainNow)
+    }
+
+    @Test
+    fun testParseSynopWithGroup76166IX1() {
+        val line = "40794,2026,11,06,09,00,AAXX 06091 40794 11970 81205 10183 20155 30012 40098 52010 60052 76166 83530="
+        val obs = SynopClient.parseSynopLine(line)
+
+        assertNotNull(obs)
+        assertEquals(1, obs!!.iX)
+        assertEquals(61, obs.ww)
+        assertTrue(obs.isRainNow)
+    }
+
+    @Test
+    fun testParseOgimetTwoLinesValidAndNil() {
+        val response = """
+            40794,2026,11,06,12,00,AAXX 06121 40794 11970 31205 10200 20120 70200=
+            40794,2026,11,06,18,00,AAXX 06181 40794 NIL=
+        """.trimIndent()
+        val obs = SynopClient.parseOgimetResponse(response)
+
+        assertNotNull(obs)
+        val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC")).apply {
+            clear()
+            set(2026, 10, 6, 12, 0, 0)
+        }
+        assertEquals(cal.timeInMillis / 1000L, obs!!.timeUtcEpochSec)
+        assertEquals(2, obs.ww)
+        assertFalse(obs.isRainNow)
+    }
 }

@@ -39,6 +39,7 @@ object Tuning {
     const val UPWIND_BEARING_MAX = 337.5         // شمال‌غرب
     const val NEIGH_MIN_VALID_POINTS = 12        // حداقل نقطهٔ معتبر از ۱۷ نقطه
     const val SYNOP_FRESH_SEC = 5400L            // ۹۰ دقیقه
+    const val SYNOP_DISPLAY_FRESH_MIN = 90   // گزارش صفی‌آباد قدیمی‌تر از این، «هوای حاضر» حساب نمی‌شود (هم‌اندازهٔ SYNOP_FRESH_SEC)
     val VERIFY_WINDOWS_H = setOf(6, 12)
     const val VERIFY_MAX_LINES = 5000
     const val YELLOW_MOIST_MIN_PROB = 0.20

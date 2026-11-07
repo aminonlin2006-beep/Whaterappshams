@@ -175,24 +175,33 @@ object ForecastEngine {
         val synopRes = synopDeferred.await()
         val radarRes = radarDeferred.await()
 
+        val nowEpochSec = System.currentTimeMillis() / 1000L
+        val synop = synopRes.data
+        val synopAgeMin = synop?.let { ((nowEpochSec - it.timeUtcEpochSec) / 60L).toInt() }
+        val (synopHealthStatus, synopHealthMsg) = when {
+            synop == null -> Pair(synopRes.status, synopRes.message)
+            synopAgeMin != null && synopAgeMin > Tuning.SYNOP_DISPLAY_FRESH_MIN ->
+                Pair(SourceStatus.PARTIAL, "آخرین گزارش ${JalaliCalendar.formatNumber(synopAgeMin)} دقیقه پیش — کهنه")
+            synopAgeMin != null ->
+                Pair(synopRes.status, "آخرین گزارش: ${JalaliCalendar.formatNumber(synopAgeMin)} دقیقه پیش")
+            else -> Pair(synopRes.status, synopRes.message)
+        }
+
         sourceHealthList.add(SourceHealth("open-meteo/neighbourhood", neighRes.status, neighRes.message))
         sourceHealthList.add(SourceHealth("open-meteo/center", centerRes.status, centerRes.message))
         sourceHealthList.add(SourceHealth("open-meteo/lifted_index", liftedIndexRes.status, liftedIndexRes.message))
         sourceHealthList.add(SourceHealth("open-meteo/steering", steeringRes.status, steeringRes.message))
         sourceHealthList.add(SourceHealth("ensemble/ecmwf", ensEcmwfRes.status, ensEcmwfRes.message))
         sourceHealthList.add(SourceHealth("ensemble/icon", ensIconRes.status, ensIconRes.message))
-        sourceHealthList.add(SourceHealth("ogimet/synop", synopRes.status, synopRes.message))
+        sourceHealthList.add(SourceHealth("ogimet/synop", synopHealthStatus, synopHealthMsg))
         sourceHealthList.add(SourceHealth("rainviewer/radar", radarRes.status, radarRes.message))
 
         val steeringWind = steeringRes.data
-        val synop = synopRes.data
         val centerDetail = centerRes.data
         val liftedIndexData = liftedIndexRes.data
         val neighMap = neighRes.data ?: emptyMap()
         val ensEcmwf = ensEcmwfRes.data
         val ensIcon = ensIconRes.data
-
-        val nowEpochSec = System.currentTimeMillis() / 1000L
         val ecmwfGrid = neighMap["ecmwf"]
         val iconGrid = neighMap["icon"]
 

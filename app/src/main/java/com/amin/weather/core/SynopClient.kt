@@ -18,7 +18,8 @@ data class SynopObs(
     val ww: Int?,
     val isRainNow: Boolean,
     val isThunder: Boolean,
-    val isRecentPrecip: Boolean
+    val isRecentPrecip: Boolean,
+    val iX: Int? = null
 )
 
 object SynopClient {
@@ -85,8 +86,9 @@ object SynopClient {
                 val isRainNow = json.getBoolean("isRainNow")
                 val isThunder = json.getBoolean("isThunder")
                 val isRecentPrecip = json.getBoolean("isRecentPrecip")
+                val iX = if (json.isNull("iX") || !json.has("iX")) null else json.getInt("iX")
 
-                cachedObs = SynopObs(timeSec, tempC, dewC, rh, precipMm, precipPeriodH, ww, isRainNow, isThunder, isRecentPrecip)
+                cachedObs = SynopObs(timeSec, tempC, dewC, rh, precipMm, precipPeriodH, ww, isRainNow, isThunder, isRecentPrecip, iX)
                 lastFetchTimeEpochSec = json.optLong("lastFetchTimeEpochSec", timeSec)
             }
         } catch (_: Exception) {}
@@ -106,6 +108,7 @@ object SynopClient {
                 put("isRainNow", obs.isRainNow)
                 put("isThunder", obs.isThunder)
                 put("isRecentPrecip", obs.isRecentPrecip)
+                put("iX", obs.iX ?: JSONObject.NULL)
                 put("lastFetchTimeEpochSec", fetchTimeSec)
             }
             file.writeText(json.toString())
@@ -190,7 +193,7 @@ object SynopClient {
             val ew = 6.112 * exp(17.67 * dewC!! / (dewC!! + 243.5))
             rh = (ew / e * 100.0).coerceIn(0.0, 100.0)
         }
-        return SynopObs(timeSec, tempC, dewC, rh, precipMm, periodH, ww, isRainNow, isThunder, isRecentPrecip)
+        return SynopObs(timeSec, tempC, dewC, rh, precipMm, periodH, ww, isRainNow, isThunder, isRecentPrecip, iX)
     }
 
     private fun parseGroup6(g: String): Pair<Double?, Int?> {
