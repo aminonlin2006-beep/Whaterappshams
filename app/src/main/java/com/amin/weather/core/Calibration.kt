@@ -94,9 +94,9 @@ object Calibration {
                         if (tempX[i] >= tempX[i + 1]) { xValid = false; break }
                     }
 
-                    var yValid = true
+                    var yValid = tempY.all { it in 0.0..1.0 }
                     for (i in 0 until tempY.size - 1) {
-                        if (tempY[i] > tempY[i + 1] || tempY[i] < 0.0 || tempY[i] > 1.0) { yValid = false; break }
+                        if (tempY[i] > tempY[i + 1]) { yValid = false; break }
                     }
 
                     if (xValid && yValid) {

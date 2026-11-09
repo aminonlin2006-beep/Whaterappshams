@@ -131,10 +131,12 @@ object SynopClient {
         val d = head[3].trim().toIntOrNull() ?: return null
         val hh = head[4].trim().toIntOrNull() ?: return null
         val mi = head[5].trim().toIntOrNull() ?: return null
+        if (y !in 2000..2100 || mo !in 1..12 || d !in 1..31 || hh !in 0..23 || mi !in 0..59) return null
         val cal = java.util.Calendar.getInstance(TimeZone.getTimeZone("UTC")).apply {
+            isLenient = false
             clear(); set(y, mo - 1, d, hh, mi, 0)
         }
-        val timeSec = cal.timeInMillis / 1000
+        val timeSec = try { cal.timeInMillis / 1000 } catch (_: Exception) { return null }  // مثلاً ۳۱ آبان نامعتبر
 
         val toks = head[6].replace("=", " ").trim().split(Regex("\\s+"))
         if (toks.size < 5 || toks[0] != "AAXX" || toks.any { it == "NIL" }) return null
@@ -184,7 +186,7 @@ object SynopClient {
         val code = ww
         val isAuto = iX == 7          // جدول wawa
         val isRainNow = code != null && if (isAuto) (code in 40..69 || code in 80..89)
-                                       else (code in 50..69 || code in 80..84 || code in 91..99)
+                                       else (code in 50..69 || code in 80..90 || code in 91..99)
         val isThunder = code != null && if (isAuto) code in 90..99 else (code in 91..99 || code == 17)
         val isRecentPrecip = code != null && !isAuto && code in 20..29
 

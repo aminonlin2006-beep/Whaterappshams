@@ -1,0 +1,986 @@
+diff --git a/app/src/main/java/com/amin/weather/MainActivity.kt b/app/src/main/java/com/amin/weather/MainActivity.kt
+index 6324846..2ee1bb4 100644
+--- a/app/src/main/java/com/amin/weather/MainActivity.kt
++++ b/app/src/main/java/com/amin/weather/MainActivity.kt
+@@ -12,6 +12,12 @@ import com.amin.weather.ui.WeatherViewModel
+ import com.amin.weather.ui.theme.DezfulWeatherTheme
+ 
+ class MainActivity : ComponentActivity() {
++    override fun onResume() {
++        super.onResume()
++        // برگشت به اپ بعد از مدتی: دادهٔ قدیمی خودکار به‌روز شود
++        androidx.lifecycle.ViewModelProvider(this)[WeatherViewModel::class.java].refreshIfStale()
++    }
++
+     override fun onCreate(savedInstanceState: Bundle?) {
+         super.onCreate(savedInstanceState)
+         enableEdgeToEdge()
+diff --git a/app/src/main/java/com/amin/weather/core/ForecastEngine.kt b/app/src/main/java/com/amin/weather/core/ForecastEngine.kt
+index 930b375..101612b 100644
+--- a/app/src/main/java/com/amin/weather/core/ForecastEngine.kt
++++ b/app/src/main/java/com/amin/weather/core/ForecastEngine.kt
+@@ -515,6 +515,7 @@ internal fun buildBlock(rows: List<ForecastRow>, ensembles: List<EnsembleSet?>,
+         if (baseTimesOrNull == null || nowHourIndex < 0) {
+             val verdict = decideTier(radarNowcast, synop, emptyList(), null, null, false, userObservation, nowEpochSec)
+             return ForecastDashboard(
++                generatedEpochSec = nowEpochSec,
+                 generatedIran = nowIranStr,
+                 verdict = verdict,
+                 radarNowcast = radarNowcast,
+@@ -814,6 +815,7 @@ internal fun buildBlock(rows: List<ForecastRow>, ensembles: List<EnsembleSet?>,
+         )
+ 
+         return ForecastDashboard(
++            generatedEpochSec = nowEpochSec,
+             location = "شعاع ۲۰ کیلومتری شمس‌آباد دزفول",
+             lat = RegionConfig.CENTER.lat,
+             lon = RegionConfig.CENTER.lon,
+@@ -909,12 +911,17 @@ internal fun buildBlock(rows: List<ForecastRow>, ensembles: List<EnsembleSet?>,
+ 
+         if (isRedRadar || isRedApproaching || isRedSynop || isRedHeavy6h) {
+             val text = when {
+-                isRedRadar -> "هشدار قرمز: پژواک شدیدی با قدرت ${radar.maxDbzInTarget} dBZ داخل محدوده هدف ۲۰ کیلومتری شناسایی شد."
+-                isRedApproaching -> "هشدار قرمز: سلول بارشی شدیدی با قدرت ${firstArrival?.maxDbz} dBZ در فاصله ${firstArrival?.distKm?.roundToInt()} کیلومتر، ورود به محدوده طی ${firstArrival?.etaMinLow} تا ${firstArrival?.etaMinHigh} دقیقه دیگر."
++                isRedRadar -> "هشدار قرمز: بارش ${PlainText.intensityFa(radar.maxDbzInTarget)} داخل دایرهٔ ۲۰ کیلومتری شمس‌آباد در رادار دیده می‌شود."
++                isRedApproaching -> "هشدار قرمز: تودهٔ بارشی ${PlainText.intensityFa(firstArrival?.maxDbz)} در ${firstArrival?.distKm?.roundToInt()} کیلومتری؛ ورود به منطقه طی ${firstArrival?.etaMinLow} تا ${firstArrival?.etaMinHigh} دقیقهٔ دیگر."
+                 isRedSynop -> "هشدار قرمز: وقوع صاعقه و تندباد در دیدبانی زمینی ایستگاه صفی‌آباد ثبت شد."
+-                else -> "هشدار قرمز: ${((block6?.pHeavy6h ?: 0.0) * 100).toInt()}٪ اعضای پیش‌بینی گروهی بیش از ۱۰ میلی‌متر بارش در ۶ ساعت آینده محاسبه کرده‌اند."
++                else -> "هشدار قرمز: احتمال ${((block6?.pHeavy6h ?: 0.0) * 100).toInt()}٪ برای بیش از ۱۰ میلی‌متر بارش در ۶ ساعت آینده."
+             }
+-            return VerdictInfo(AlertTier.RED, text, "از تردد غیرضروری در فضای باز و بستر رودخانه‌ها خودداری فرمایید.")
++            val headline = when {
++                isRedRadar || isRedSynop -> "بارش شدید یا رعدوبرق در منطقه"
++                isRedApproaching -> "تودهٔ بارشی شدید در راه"
++                else -> "احتمال بارش سنگین در ۶ ساعت آینده"
++            }
++            return VerdictInfo(AlertTier.RED, text, "از تردد غیرضروری در فضای باز و بستر رودخانه‌ها خودداری فرمایید.", headline)
+         }
+ 
+         // ORANGE conditions
+@@ -928,12 +935,17 @@ internal fun buildBlock(rows: List<ForecastRow>, ensembles: List<EnsembleSet?>,
+         if (isOrangeRadar || isOrangeApproaching || isOrangeSynop || isOrangeProb || isOrangeUser) {
+             val text = when {
+                 isOrangeUser -> "هشدار نارنجی: بارش در محل شما (گزارش خودتان: ${userObservation?.phenomenon}، $userAgeMin دقیقه پیش)."
+-                isOrangeApproaching -> "هشدار نارنجی: سلول بارشی با قدرت ${firstArrival?.maxDbz} dBZ در ${firstArrival?.distKm?.roundToInt()} کیلومتری (${firstArrival?.directionFa}) به سمت محدوده در حرکت است (ورود محتمل: ${firstArrival?.etaMinLow} تا ${firstArrival?.etaMinHigh} دقیقه دیگر)."
++                isOrangeApproaching -> "هشدار نارنجی: تودهٔ بارشی ${PlainText.intensityFa(firstArrival?.maxDbz)} در ${firstArrival?.distKm?.roundToInt()} کیلومتری (${firstArrival?.directionFa}) به سمت منطقه می‌آید؛ ورود محتمل ${firstArrival?.etaMinLow} تا ${firstArrival?.etaMinHigh} دقیقهٔ دیگر."
+                 isOrangeRadar -> "هشدار نارنجی: لکه‌های بارشی فعال در اسکن راداری محدوده ۲۰ کیلومتری دیده می‌شود."
+                 isOrangeSynop -> "هشدار نارنجی: ثبت بارش فعال در ایستگاه دیدبانی صفی‌آباد."
+                 else -> "هشدار نارنجی: مدل‌های پیش‌بینی احتمال بارش بالای ۶۰ درصد برای ۶ ساعت آینده محاسبه کرده‌اند."
+             }
+-            return VerdictInfo(AlertTier.ORANGE, text, "احتمال وقوع رگبار ناگهانی و تندباد موضعی وجود دارد.")
++            val headline = when {
++                isOrangeUser || isOrangeSynop || isOrangeRadar -> "همین الان در منطقه باران می‌بارد"
++                isOrangeApproaching -> "تودهٔ بارشی در راه"
++                else -> "بارش در ۶ ساعت آینده محتمل است"
++            }
++            return VerdictInfo(AlertTier.ORANGE, text, "احتمال وقوع رگبار ناگهانی و تندباد موضعی وجود دارد.", headline)
+         }
+ 
+         // YELLOW conditions
+@@ -950,7 +962,7 @@ internal fun buildBlock(rows: List<ForecastRow>, ensembles: List<EnsembleSet?>,
+ 
+         if (isYellowRadarLight || isYellowProb || isYellowMoistProb || isYellowConv || isYellowMiss || isYellowUpwindEcho || isYellowSynopRecent) {
+             val text = when {
+-                isYellowRadarLight -> "هشدار زرد: بارش سبک روی بخشی از دایرهٔ ۲۰ کیلومتری در رادار دیده می‌شود (${radar.maxDbzInTarget} dBZ)."
++                isYellowRadarLight -> "هشدار زرد: بارش سبک روی بخشی از دایرهٔ ۲۰ کیلومتری در رادار دیده می‌شود."
+                 isYellowUpwindEcho -> "هشدار زرد: تودهٔ بارشی قوی در فاصلهٔ دور به سمت محدوده در حرکت است."
+                 isYellowSynopRecent -> "هشدار زرد: ثبت بارش در ساعت اخیر در دیدبانی ایستگاه صفی‌آباد."
+                 isYellowConv -> "هشدار زرد: افزایش پتانسیل همرفتی و ناپایداری جوی طی ۱۲ ساعت آینده."
+@@ -958,7 +970,13 @@ internal fun buildBlock(rows: List<ForecastRow>, ensembles: List<EnsembleSet?>,
+                 isYellowMoistProb -> "هشدار زرد: ورود رطوبت تراز پایین همراه با احتمال بارش در ۱۲ ساعت آینده."
+                 else -> "هشدار زرد: احتمال رگبار موضعی و ناپایداری جوی در ساعات آینده."
+             }
+-            return VerdictInfo(AlertTier.YELLOW, text, "اوضاع جوی به طور مستمر رصد می‌شود.")
++            val headline = when {
++                isYellowRadarLight -> "بارش سبک در بخشی از منطقه"
++                isYellowSynopRecent -> "بارش اخیر در صفی‌آباد"
++                isYellowUpwindEcho || isYellowMiss -> "تودهٔ بارشی در نزدیکی منطقه"
++                else -> "احتمال بارش در ۱۲ ساعت آینده"
++            }
++            return VerdictInfo(AlertTier.YELLOW, text, "اوضاع جوی به طور مستمر رصد می‌شود.", headline)
+         }
+ 
+         // سبز فقط وقتی دست‌کم یک مشاهدهٔ زندهٔ معتبر «بدون بارش» را تأیید کند:
+diff --git a/app/src/main/java/com/amin/weather/core/PlainText.kt b/app/src/main/java/com/amin/weather/core/PlainText.kt
+new file mode 100644
+index 0000000..1cd4aa9
+--- /dev/null
++++ b/app/src/main/java/com/amin/weather/core/PlainText.kt
+@@ -0,0 +1,71 @@
++package com.amin.weather.core
++
++/**
++ * متن‌های ساده برای کشاورز: تبدیل اصطلاحات فنی به زبان روزمره.
++ * هر جای صفحه که عدد فنی (dBZ، نام منبع، وضعیت منبع) نمایش می‌دهد باید از این‌جا بگیرد.
++ */
++object PlainText {
++
++    /** شدت بارش از روی قدرت اکوی رادار */
++    fun intensityFa(dbz: Int?): String = when {
++        dbz == null || dbz < Tuning.DBZ_RAIN -> "خیلی ضعیف"
++        dbz < 30 -> "سبک"
++        dbz < Tuning.DBZ_STRONG -> "متوسط"
++        dbz < Tuning.DBZ_SEVERE -> "شدید"
++        else -> "بسیار شدید"
++    }
++
++    /** نام فارسی منبع داده در کارت «سلامت منابع» */
++    fun sourceNameFa(source: String): String = when (source) {
++        "open-meteo/neighbourhood" -> "مدل‌ها در ۱۷ نقطهٔ اطراف"
++        "open-meteo/center" -> "مدل در مرکز شمس‌آباد"
++        "open-meteo/lifted_index" -> "شاخص ناپایداری هوا"
++        "open-meteo/steering" -> "باد ارتفاعات"
++        "ensemble/ecmwf" -> "پیش‌بینی گروهی اروپا"
++        "ensemble/icon" -> "پیش‌بینی گروهی آلمان"
++        "ogimet/synop" -> "ایستگاه صفی‌آباد"
++        "rainviewer/radar" -> "رادار"
++        else -> source
++    }
++
++    fun statusFa(status: SourceStatus): String = when (status) {
++        SourceStatus.OK -> "سالم"
++        SourceStatus.PARTIAL -> "ناقص"
++        SourceStatus.FAILED -> "قطع"
++        SourceStatus.UNAVAILABLE -> "ناموجود"
++    }
++
++    /** ارقام فارسی/عربی را به لاتین برمی‌گرداند تا toDoubleOrNull کار کند («۲۵٫۵» ← "25.5") */
++    fun toLatinDigits(input: String): String {
++        val sb = StringBuilder(input.length)
++        for (ch in input) {
++            sb.append(when (ch) {
++                in '۰'..'۹' -> '0' + (ch - '۰')
++                in '٠'..'٩' -> '0' + (ch - '٠')
++                '٫', '،' -> '.'
++                else -> ch
++            })
++        }
++        return sb.toString()
++    }
++
++    /**
++     * برچسب ساعت برای کارت‌های ساعتی: «۱۴:۰۰» برای امروز، «فردا ۰۲:۰۰» برای فردا، «پس‌فردا …» بعد از آن.
++     * روزها بر اساس تقویم ایران (UTC+3:30).
++     */
++    fun hourLabelFa(epochSec: Long, nowSec: Long): String {
++        val off = 12_600L   // ۳٫۵ ساعت
++        val dayNow = Math.floorDiv(nowSec + off, 86_400L)
++        val day = Math.floorDiv(epochSec + off, 86_400L)
++        val secOfDay = Math.floorMod(epochSec + off, 86_400L)
++        val hh = (secOfDay / 3600).toString().padStart(2, '0')
++        val mm = ((secOfDay % 3600) / 60).toString().padStart(2, '0')
++        val t = JalaliCalendar.toPersianDigits("$hh:$mm")
++        return when (day - dayNow) {
++            0L -> t
++            1L -> "فردا $t"
++            2L -> "پس‌فردا $t"
++            else -> t
++        }
++    }
++}
+diff --git a/app/src/main/java/com/amin/weather/core/RadarAnalyzer.kt b/app/src/main/java/com/amin/weather/core/RadarAnalyzer.kt
+index 2c2efb7..ec3c174 100644
+--- a/app/src/main/java/com/amin/weather/core/RadarAnalyzer.kt
++++ b/app/src/main/java/com/amin/weather/core/RadarAnalyzer.kt
+@@ -390,23 +390,21 @@ object RadarAnalyzer {
+ 
+         val statusText = buildString {
+             when {
+-                maxDbzTarget >= Tuning.DBZ_SEVERE -> append("رادار: لکه بارشی شدیدی با قدرت $maxDbzTarget dBZ داخل دایره ۲۰km شمس‌آباد فعال است.")
+-                maxDbzTarget >= Tuning.DBZ_RAIN -> append("رادار: لکه بارشی با قدرت $maxDbzTarget dBZ داخل دایره ۲۰km شمس‌آباد رصد شد.")
++                maxDbzTarget >= Tuning.DBZ_SEVERE -> append("رادار: بارش ${PlainText.intensityFa(maxDbzTarget)} داخل دایرهٔ ۲۰ کیلومتری شمس‌آباد.")
++                maxDbzTarget >= Tuning.DBZ_RAIN -> append("رادار: بارش ${PlainText.intensityFa(maxDbzTarget)} داخل دایرهٔ ۲۰ کیلومتری شمس‌آباد.")
+                 firstArrival != null -> {
+                     if (firstArrival.etaMinHigh == 0) {
+-                        append("رادار: توده بارشی ${firstArrival.maxDbz} dBZ احتمالاً هم‌اکنون به محدوده رسیده است.")
++                        append("رادار: تودهٔ بارشی ${PlainText.intensityFa(firstArrival.maxDbz)} احتمالاً همین الان به منطقه رسیده است.")
+                     } else {
+-                        append("رادار: توده بارشی ${firstArrival.maxDbz} dBZ در ${firstArrival.distKm.toInt()}km (${firstArrival.directionFa})، ورود محتمل بین ${firstArrival.etaMinLow} تا ${firstArrival.etaMinHigh} دقیقه دیگر.")
++                        append("رادار: تودهٔ بارشی ${PlainText.intensityFa(firstArrival.maxDbz)} در ${firstArrival.distKm.toInt()} کیلومتری (${firstArrival.directionFa})؛ ورود محتمل ${firstArrival.etaMinLow} تا ${firstArrival.etaMinHigh} دقیقهٔ دیگر.")
+                     }
+                 }
+-                shownCells.isNotEmpty() -> append("رادار: ${shownCells.size} توده بارشی خارج از دایره ۲۰km شمس‌آباد رصد شد.")
++                shownCells.isNotEmpty() -> append("رادار: ${shownCells.size} تودهٔ بارشی بیرون از دایرهٔ ۲۰ کیلومتری دیده می‌شود.")
+                 else -> append("رادار: در تصویر آخر، لکهٔ بارشی در دایرهٔ ۲۰ کیلومتری دیده نمی‌شود.")
+             }
+-            if (clutterPixelsRemoved > 0) {
+-                append(" ($clutterPixelsRemoved پیکسل کلاتر حذف شد)")
+-            }
++            // تعداد پیکسل‌های حذف‌شدهٔ کلاتر فقط در کارت «جزئیات فنی» نمایش داده شود (clutterPixelsRemoved)
+             if (!fetch.coverageVerified) {
+-                append(" (پوشش رادار تایید نشده)")
++                append(" (معلوم نیست رادار این منطقه را پوشش می‌دهد)")
+             }
+             append(" (تصویر رادار ${frameAgeMin} دقیقه پیش)")
+         }
+diff --git a/app/src/main/java/com/amin/weather/core/Tuning.kt b/app/src/main/java/com/amin/weather/core/Tuning.kt
+index 7a5c5b7..0aa0fb6 100644
+--- a/app/src/main/java/com/amin/weather/core/Tuning.kt
++++ b/app/src/main/java/com/amin/weather/core/Tuning.kt
+@@ -36,6 +36,7 @@ object Tuning {
+     const val SYNOP_FRESH_SEC = 5400L            // ۹۰ دقیقه
+     const val FUTURE_TOLERANCE_SEC = 600L        // گزارشی که بیش از ۱۰ دقیقه «در آینده» باشد نامعتبر است (ساعت گوشی یا داده خراب)
+     const val RADAR_BLIND_MODEL_WET_FRAC = 0.7   // اگر این سهم از نقاط ECMWF همین الان خیس باشد و رادار هیچ اکویی نبیند، رادار «کور» است
++    const val AUTO_REFRESH_MIN = 15L            // برگشت به اپ: اگر داده قدیمی‌تر از این بود خودکار به‌روز شود
+     const val STALE_CACHE_MIN = 30               // دادهٔ ذخیره‌شده قدیمی‌تر از این «کهنه» نمایش داده می‌شود
+     val VERIFY_WINDOWS_H = setOf(6, 12)
+     const val VERIFY_MAX_LINES = 5000
+diff --git a/app/src/main/java/com/amin/weather/core/WeatherModels.kt b/app/src/main/java/com/amin/weather/core/WeatherModels.kt
+index 93e4a10..cb87d46 100644
+--- a/app/src/main/java/com/amin/weather/core/WeatherModels.kt
++++ b/app/src/main/java/com/amin/weather/core/WeatherModels.kt
+@@ -5,7 +5,7 @@ enum class AlertTier(
+     val title: String,
+     val hexColor: String
+ ) {
+-    GREEN("green", "آسمان آرام و پایدار", "#10B981"),
++    GREEN("green", "بارشی در منطقه دیده نمی‌شود", "#10B981"),
+     UNKNOWN("unknown", "وضعیت زنده نامشخص", "#9CA3AF"),
+     YELLOW("yellow", "احتمال رگبار موضعی و ناپایداری جوی", "#F59E0B"),
+     ORANGE("orange", "توده بارشی در راه", "#F97316"),
+@@ -51,7 +51,9 @@ enum class ForecastColumn(val key: String, val label: String, val defaultVisible
+ data class VerdictInfo(
+     val tier: AlertTier,
+     val text: String,
+-    val advisoryNote: String = ""
++    val advisoryNote: String = "",
++    /** عنوان کوتاه کارت هشدار، ساخته‌شده از «دلیل» هشدار (نه فقط از سطح) */
++    val headline: String = tier.title
+ )
+ 
+ data class NeighbourhoodSummary(
+@@ -148,7 +150,8 @@ data class ForecastDashboard(
+     val sourceHealth: List<SourceHealth> = emptyList(),
+     val verificationStats: VerificationStats? = null,
+     val userObservation: SkyObservationReport? = null,
+-    val modelsAvailable: Boolean = true,   // false = هیچ مدل پیش‌بینی نرسید؛ جدول ساعتی و الگو باید «نامشخص» نشان دهند
++    val modelsAvailable: Boolean = true,
++    val generatedEpochSec: Long = 0L,      // زمان محاسبه (برای به‌روزرسانی خودکار هنگام برگشت به اپ)   // false = هیچ مدل پیش‌بینی نرسید؛ جدول ساعتی و الگو باید «نامشخص» نشان دهند
+     val isStale: Boolean = false,          // true = اتصال برقرار نشد و این دادهٔ ذخیره‌شدهٔ قبلی است
+     val dataAgeMin: Int? = null            // سن داده به دقیقه، وقتی isStale است
+ )
+diff --git a/app/src/main/java/com/amin/weather/core/WeatherRepository.kt b/app/src/main/java/com/amin/weather/core/WeatherRepository.kt
+index abb0258..a0f20a5 100644
+--- a/app/src/main/java/com/amin/weather/core/WeatherRepository.kt
++++ b/app/src/main/java/com/amin/weather/core/WeatherRepository.kt
+@@ -179,8 +179,10 @@ class WeatherRepository(private val context: Context) {
+             put("tier", d.verdict.tier.levelName)
+             put("text", d.verdict.text)
+             put("advisoryNote", d.verdict.advisoryNote)
++            put("headline", d.verdict.headline)
+         }
+         root.put("verdict", verdictObj)
++        root.put("generatedEpochSec", d.generatedEpochSec)
+ 
+         val rObj = JSONObject().apply {
+             put("available", d.radarNowcast.available)
+@@ -254,7 +256,10 @@ class WeatherRepository(private val context: Context) {
+             "unknown" -> AlertTier.UNKNOWN
+             else -> AlertTier.UNKNOWN   // نامعلوم هرگز سبز نیست
+         }
+-        val verdict = VerdictInfo(alertTier, vObj.optString("text", ""), vObj.optString("advisoryNote", ""))
++        val verdict = VerdictInfo(
++            alertTier, vObj.optString("text", ""), vObj.optString("advisoryNote", ""),
++            vObj.optString("headline", alertTier.title)
++        )
+ 
+         val rObj = root.optJSONObject("radarNowcast") ?: JSONObject()
+         val radarNowcast = RadarNowcastResult(
+@@ -329,6 +334,7 @@ class WeatherRepository(private val context: Context) {
+             lat = lat,
+             lon = lon,
+             generatedIran = generatedIran,
++            generatedEpochSec = root.optLong("generatedEpochSec", 0L),
+             verdict = verdict,
+             radarNowcast = radarNowcast,
+             neighbourhood = nSummary,
+diff --git a/app/src/main/java/com/amin/weather/ui/WeatherDashboardScreen.kt b/app/src/main/java/com/amin/weather/ui/WeatherDashboardScreen.kt
+index 452ecf1..a8c8b68 100644
+--- a/app/src/main/java/com/amin/weather/ui/WeatherDashboardScreen.kt
++++ b/app/src/main/java/com/amin/weather/ui/WeatherDashboardScreen.kt
+@@ -244,7 +244,8 @@ fun WeatherDashboardScreen(
+                                     text = "پایش ۲۰ km شمس‌آباد دزفول",
+                                     style = MaterialTheme.typography.labelSmall,
+                                     color = TextSecondary,
+-                                    maxLines = 1
++                                    maxLines = 1,
++                                    overflow = TextOverflow.Ellipsis
+                                 )
+                             }
+                         }
+@@ -445,7 +446,7 @@ fun WeatherDashboardScreen(
+ 
+             if (showNotificationSheet) {
+                 ModalBottomSheet(
+-                    onDismissRequest = { showNotificationSheet = false },
++                    onDismissRequest = { showNotificationSheet = false; onClearFeedbackMessage() },
+                     sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+                     containerColor = SlateCard
+                 ) {
+@@ -475,7 +476,9 @@ private fun DashboardContent(
+     onClearSkyObservation: () -> Unit = {},
+     onOpenRegionInfo: () -> Unit = {}
+ ) {
+-    val hourlyRows = dashboard.ranges[ForecastRange.HOURLY].orEmpty()
++    // ساعت‌های گذشته نمایش داده نشوند (مثلاً وقتی دادهٔ ذخیره‌شده نمایش داده می‌شود)
++    val nowSecForRows = System.currentTimeMillis() / 1000L
++    val hourlyRows = dashboard.ranges[ForecastRange.HOURLY].orEmpty().filter { it.timeEpochSec >= nowSecForRows - 1800L }
+ 
+     LazyColumn(
+         modifier = Modifier.fillMaxSize(),
+@@ -556,7 +559,7 @@ private fun DashboardContent(
+                                 text = "شامل: شمس‌آباد، صفی‌آباد، دزفول، اندیمشک و مزارع اطراف",
+                                 style = MaterialTheme.typography.labelSmall,
+                                 color = TextSecondary,
+-                                fontSize = 10.sp
++                                fontSize = 12.sp
+                             )
+                         }
+                     }
+@@ -629,17 +632,17 @@ private fun DashboardContent(
+                 Tab(
+                     selected = selectedBottomTab == 0,
+                     onClick = { onSelectBottomTab(0) },
+-                    text = { Text("📡 رادار و همسایگی", fontSize = 11.sp, fontWeight = FontWeight.Bold) }
++                    text = { Text("📡 رادار", fontSize = 13.sp, fontWeight = FontWeight.Bold) }
+                 )
+                 Tab(
+                     selected = selectedBottomTab == 1,
+                     onClick = { onSelectBottomTab(1) },
+-                    text = { Text("🏢 دیدبانی صفی‌آباد", fontSize = 11.sp, fontWeight = FontWeight.Bold) }
++                    text = { Text("🏢 ایستگاه", fontSize = 13.sp, fontWeight = FontWeight.Bold) }
+                 )
+                 Tab(
+                     selected = selectedBottomTab == 2,
+                     onClick = { onSelectBottomTab(2) },
+-                    text = { Text("⚡ الگوی همرفتی و سلامت", fontSize = 11.sp, fontWeight = FontWeight.Bold) }
++                    text = { Text("⚙️ جزئیات", fontSize = 13.sp, fontWeight = FontWeight.Bold) }
+                 )
+             }
+         }
+@@ -677,14 +680,14 @@ private fun DashboardContent(
+                     style = MaterialTheme.typography.labelSmall,
+                     color = TextSecondary,
+                     textAlign = TextAlign.Center,
+-                    fontSize = 10.sp
++                    fontSize = 12.sp
+                 )
+                 Text(
+                     text = "پایش دقیق بارش شعاع ۲۰ کیلومتری شمس‌آباد دزفول (پکیج com.amin.weather)",
+                     style = MaterialTheme.typography.labelSmall,
+                     color = TextSecondary.copy(alpha = 0.7f),
+                     textAlign = TextAlign.Center,
+-                    fontSize = 9.sp
++                    fontSize = 12.sp
+                 )
+             }
+         }
+@@ -716,8 +719,11 @@ private fun HeroAlertTierCard(
+         AlertTier.UNKNOWN -> Icons.Default.HelpOutline
+     }
+ 
+-    val curTemp = synop?.tempC ?: modelCurrent?.tempC
+-    val curRh = synop?.rh ?: modelCurrent?.rh
++    // دمای ایستگاه فقط وقتی گزارش تازه است؛ وگرنه دمای مدل
++    val synopFreshNow = Freshness.isSynopFresh(synop, System.currentTimeMillis() / 1000L)
++    val liveSynop = if (synopFreshNow) synop else null
++    val curTemp = liveSynop?.tempC ?: modelCurrent?.tempC
++    val curRh = liveSynop?.rh ?: modelCurrent?.rh
+     val curWind = modelCurrent?.windSpeedKmh
+     val feelsLike = computeFeelsLike(curTemp, curRh, curWind)
+ 
+@@ -745,7 +751,7 @@ private fun HeroAlertTierCard(
+                     )
+                     Spacer(modifier = Modifier.width(8.dp))
+                     Text(
+-                        text = tier.title,
++                        text = verdict.headline,
+                         style = MaterialTheme.typography.titleMedium,
+                         fontWeight = FontWeight.Bold,
+                         color = tierColor
+@@ -779,8 +785,18 @@ private fun HeroAlertTierCard(
+                         maxLines = 1,
+                         overflow = TextOverflow.Ellipsis
+                     )
+-                    IconButton(onClick = onClearObservation, modifier = Modifier.size(20.dp)) {
+-                        Icon(imageVector = Icons.Default.Close, contentDescription = "حذف", tint = TextSecondary, modifier = Modifier.size(12.dp))
++                    var confirmDelete by remember { mutableStateOf(false) }
++                    IconButton(onClick = { confirmDelete = true }, modifier = Modifier.size(44.dp)) {
++                        Icon(imageVector = Icons.Default.Close, contentDescription = "حذف گزارش", tint = TextSecondary, modifier = Modifier.size(20.dp))
++                    }
++                    if (confirmDelete) {
++                        AlertDialog(
++                            onDismissRequest = { confirmDelete = false },
++                            title = { Text("حذف گزارش") },
++                            text = { Text("گزارش مشاهدهٔ شما حذف شود؟") },
++                            confirmButton = { TextButton(onClick = { confirmDelete = false; onClearObservation() }) { Text("حذف") } },
++                            dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("انصراف") } }
++                        )
+                     }
+                 }
+             }
+@@ -800,7 +816,7 @@ private fun HeroAlertTierCard(
+                         Icon(imageVector = Icons.Default.Thermostat, contentDescription = null, tint = SkyAccent, modifier = Modifier.size(18.dp))
+                         Spacer(modifier = Modifier.width(4.dp))
+                         Text(
+-                            text = "دما: ${JalaliCalendar.formatNumber(curTemp)}°C ${if (synop != null) "(ایستگاه صفی‌آباد)" else "(برآورد مدل)"}",
++                            text = "دما: ${JalaliCalendar.formatNumber(curTemp)}°C ${if (liveSynop?.tempC != null) "(ایستگاه صفی‌آباد)" else "(برآورد مدل)"}",
+                             style = MaterialTheme.typography.labelMedium,
+                             fontWeight = FontWeight.Bold
+                         )
+@@ -851,10 +867,10 @@ private fun HeroAlertTierCard(
+                         text = "منظور از منطقه: شمس‌آباد، صفی‌آباد، دزفول، اندیمشک (۲۰km)",
+                         style = MaterialTheme.typography.labelSmall,
+                         color = TextSecondary,
+-                        fontSize = 10.sp
++                        fontSize = 12.sp
+                     )
+                 }
+-                Text("جزئیات ℹ️", style = MaterialTheme.typography.labelSmall, color = SkyAccent, fontSize = 9.sp)
++                Text("جزئیات ℹ️", style = MaterialTheme.typography.labelSmall, color = SkyAccent, fontSize = 12.sp)
+             }
+         }
+     }
+@@ -889,7 +905,7 @@ private fun HourlyTimelineSection(
+                     text = "برای جزییات روی ساعت بزنید",
+                     style = MaterialTheme.typography.labelSmall,
+                     color = TextSecondary,
+-                    fontSize = 10.sp
++                    fontSize = 12.sp
+                 )
+             }
+ 
+@@ -901,7 +917,6 @@ private fun HourlyTimelineSection(
+             ) {
+                 itemsIndexed(rows.take(24)) { index, row ->
+                     val probAreaStr = row.probArea?.let { "${it.toInt()}٪" } ?: "نامشخص"
+-                    val probPointStr = row.probPoint?.let { "${it.toInt()}٪" } ?: "نامشخص"
+                     val isRain = (row.probArea ?: 0.0) >= 20.0 || (row.amountP50 ?: 0.0) >= 0.1
+                     val isSelected = selectedRowIndex == index
+ 
+@@ -922,11 +937,11 @@ private fun HourlyTimelineSection(
+                             horizontalAlignment = Alignment.CenterHorizontally
+                         ) {
+                             Text(
+-                                text = row.timeIran.takeLast(5),
++                                text = PlainText.hourLabelFa(row.timeEpochSec, System.currentTimeMillis() / 1000L),
+                                 style = MaterialTheme.typography.labelSmall,
+                                 fontWeight = FontWeight.Bold,
+                                 color = TextSecondary,
+-                                fontSize = 11.sp
++                                fontSize = 12.sp
+                             )
+                             Spacer(modifier = Modifier.height(4.dp))
+                             Text(
+@@ -952,29 +967,24 @@ private fun HourlyTimelineSection(
+                                     style = MaterialTheme.typography.labelSmall,
+                                     fontWeight = FontWeight.Bold,
+                                     color = if (isRain) SkyAccent else TextSecondary,
+-                                    fontSize = 10.sp
++                                    fontSize = 12.sp
+                                 )
+                             }
+-                            Text(
+-                                text = "مرکز: $probPointStr",
+-                                style = MaterialTheme.typography.labelSmall,
+-                                color = TextSecondary,
+-                                fontSize = 9.sp
+-                            )
++                            // احتمال نقطهٔ مرکز فقط در جزئیات ساعت نمایش داده می‌شود (یک عدد روی کارت کافی است)
+                             if (row.amountP50 != null && row.amountP50 >= 0.1) {
+                                 Text(
+                                     text = "${JalaliCalendar.formatNumber(row.amountP50)} mm",
+                                     style = MaterialTheme.typography.labelSmall,
+                                     fontWeight = FontWeight.Bold,
+                                     color = SkyAccent,
+-                                    fontSize = 9.sp
++                                    fontSize = 12.sp
+                                 )
+                             } else {
+                                 Text(
+-                                    text = row.convLabel.take(8),
++                                    text = row.convLabel,
+                                     style = MaterialTheme.typography.labelSmall,
+                                     color = TextSecondary,
+-                                    fontSize = 8.sp,
++                                    fontSize = 12.sp,
+                                     maxLines = 1
+                                 )
+                             }
+@@ -998,7 +1008,7 @@ private fun HourlyTimelineSection(
+                     verticalArrangement = Arrangement.spacedBy(6.dp)
+                 ) {
+                     Text(
+-                        text = "🔍 جزئیات پیش‌بینی ساعت ${selRow.timeIran}:",
++                        text = "🔍 جزئیات پیش‌بینی ساعت ${PlainText.hourLabelFa(selRow.timeEpochSec, System.currentTimeMillis() / 1000L)}:",
+                         style = MaterialTheme.typography.labelMedium,
+                         fontWeight = FontWeight.Bold,
+                         color = SkyAccent
+@@ -1008,8 +1018,8 @@ private fun HourlyTimelineSection(
+                         Text("احتمال نقطه‌ای شمس‌آباد: ${selRow.probPoint?.let { "${it.toInt()}٪" } ?: "نامشخص"}", style = MaterialTheme.typography.labelSmall)
+                     }
+                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+-                        Text("بارش محتمل (P50): ${selRow.amountP50?.let { "${JalaliCalendar.formatNumber(it)} mm" } ?: "نامشخص"}", style = MaterialTheme.typography.labelSmall)
+-                        Text("بیشینه بارش (P90): ${selRow.amountP90?.let { "${JalaliCalendar.formatNumber(it)} mm" } ?: "نامشخص"}", style = MaterialTheme.typography.labelSmall)
++                        Text("مقدار محتمل بارش: ${selRow.amountP50?.let { "${JalaliCalendar.formatNumber(it)} mm" } ?: "نامشخص"}", style = MaterialTheme.typography.labelSmall)
++                        Text("حداکثر احتمالی بارش: ${selRow.amountP90?.let { "${JalaliCalendar.formatNumber(it)} mm" } ?: "نامشخص"}", style = MaterialTheme.typography.labelSmall)
+                     }
+                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                         Text("دما: ${selRow.tempC?.let { "${JalaliCalendar.formatNumber(it)}°C" } ?: "—"} | شبنم: ${selRow.dewC?.let { "${JalaliCalendar.formatNumber(it)}°C" } ?: "—"}", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+@@ -1023,7 +1033,7 @@ private fun HourlyTimelineSection(
+                         Row(verticalAlignment = Alignment.CenterVertically) {
+                             Icon(imageVector = Icons.Default.Info, contentDescription = null, tint = SkyAccent, modifier = Modifier.size(13.dp))
+                             Spacer(modifier = Modifier.width(4.dp))
+-                            Text("منبع: ${selRow.sources.joinToString("، ")}", style = MaterialTheme.typography.labelSmall, color = SkyAccent, fontSize = 10.sp)
++                            Text("منبع: ${selRow.sources.joinToString("، ")}", style = MaterialTheme.typography.labelSmall, color = SkyAccent, fontSize = 12.sp)
+                         }
+                     }
+                 }
+@@ -1047,13 +1057,13 @@ private fun RadarCanvasCard(radar: RadarNowcastResult) {
+                 verticalAlignment = Alignment.CenterVertically
+             ) {
+                 Text(
+-                    text = "📡 رادار زنده RainViewer — شعاع ۲۰km",
++                    text = "📡 رادار (دایرهٔ ۲۰ کیلومتری)",
+                     style = MaterialTheme.typography.titleSmall,
+                     fontWeight = FontWeight.Bold,
+                     color = SkyAccent
+                 )
+                 Text(
+-                    text = if (radar.available) "سن فریم: ${radar.frameAgeMin} دقیقه" else "ناموجود",
++                    text = if (radar.available) "تصویر ${JalaliCalendar.formatNumber(radar.frameAgeMin)} دقیقه پیش" else "استفاده نشد",
+                     style = MaterialTheme.typography.labelSmall,
+                     color = TextSecondary
+                 )
+@@ -1107,7 +1117,7 @@ private fun RadarCanvasCard(radar: RadarNowcastResult) {
+                         center = Offset(cx, cy)
+                     )
+ 
+-                    for (cell in radar.cells) {
++                    if (radar.available) for (cell in radar.cells) {
+                         val cellPxX = cx + (cell.xLocalKm.toFloat() * scale)
+                         val cellPxY = cy - (cell.yLocalKm.toFloat() * scale)
+ 
+@@ -1155,8 +1165,8 @@ private fun RadarCanvasCard(radar: RadarNowcastResult) {
+                         .background(Color.Black.copy(alpha = 0.6f))
+                         .padding(6.dp)
+                 ) {
+-                    Text("📍 مرکز: شمس‌آباد (دایره ۲۰km)", color = SkyAccent, fontSize = 9.sp)
+-                    Text("⚪ دایره‌ها: ۵۰km و ۱۰۰km", color = Color.LightGray, fontSize = 9.sp)
++                    Text("📍 مرکز: شمس‌آباد (دایره ۲۰km)", color = SkyAccent, fontSize = 12.sp)
++                    Text("⚪ دایره‌ها: ۵۰km و ۱۰۰km", color = Color.LightGray, fontSize = 12.sp)
+                 }
+             }
+ 
+@@ -1168,7 +1178,7 @@ private fun RadarCanvasCard(radar: RadarNowcastResult) {
+                 color = MaterialTheme.colorScheme.onSurface
+             )
+ 
+-            if (radar.firstArrival != null) {
++            if (radar.available && radar.firstArrival != null) {
+                 val arr = radar.firstArrival!!
+                 Spacer(modifier = Modifier.height(6.dp))
+                 Card(
+@@ -1177,7 +1187,7 @@ private fun RadarCanvasCard(radar: RadarNowcastResult) {
+                 ) {
+                     Column(modifier = Modifier.padding(8.dp)) {
+                         Text(
+-                            text = "⚡ نزدیک‌ترین توده بارشی: ${arr.maxDbz} dBZ در ${arr.distKm.toInt()}km (${arr.directionFa})",
++                            text = "⚡ نزدیک‌ترین تودهٔ بارشی: ${PlainText.intensityFa(arr.maxDbz)}، در ${JalaliCalendar.formatNumber(arr.distKm.toInt())} کیلومتری (${arr.directionFa})",
+                             style = MaterialTheme.typography.labelSmall,
+                             fontWeight = FontWeight.Bold,
+                             color = AmberStorm
+@@ -1197,7 +1207,7 @@ private fun RadarCanvasCard(radar: RadarNowcastResult) {
+                             text = "$headingStr با سرعت $spdStr km/h ($motionSourceFa) · زمان ورود: $etaStr$covNotice$clutterNotice",
+                             style = MaterialTheme.typography.labelSmall,
+                             color = TextSecondary,
+-                            fontSize = 10.sp
++                            fontSize = 12.sp
+                         )
+                     }
+                 }
+@@ -1254,7 +1264,7 @@ private fun SynopObsCard(synop: SynopObs?, modelCurrent: ModelCurrent?) {
+     ) {
+         Column(modifier = Modifier.padding(14.dp)) {
+             Text(
+-                text = "🏢 حقیقت زمینی: ایستگاه سینوپتیک صفی‌آباد (WMO 40794)",
++                text = "🏢 ایستگاه هواشناسی صفی‌آباد",
+                 style = MaterialTheme.typography.titleSmall,
+                 fontWeight = FontWeight.Bold,
+                 color = SkyAccent
+@@ -1264,7 +1274,7 @@ private fun SynopObsCard(synop: SynopObs?, modelCurrent: ModelCurrent?) {
+                 text = "فاصله ۳٫۶ کیلومتر از شمس‌آباد (ارتفاع ۸۳ متر) · گزارش رسمی Ogimet/WMO",
+                 style = MaterialTheme.typography.labelSmall,
+                 color = TextSecondary,
+-                fontSize = 10.sp
++                fontSize = 12.sp
+             )
+ 
+             Spacer(modifier = Modifier.height(10.dp))
+@@ -1273,7 +1283,7 @@ private fun SynopObsCard(synop: SynopObs?, modelCurrent: ModelCurrent?) {
+                 val nowSec = System.currentTimeMillis() / 1000L
+                 val ageMin = ((nowSec - synop.timeUtcEpochSec) / 60L).toInt()
+                 val isFresh = Freshness.isSynopFresh(synop, nowSec)
+-                val obsTimeIran = ForecastEngine.epochToIran(synop.timeUtcEpochSec)
++                val obsTimeIran = JalaliCalendar.formatShort(ForecastEngine.epochToIran(synop.timeUtcEpochSec))
+ 
+                 Text(
+                     text = if (isFresh) "گزارش ساعت $obsTimeIran (${JalaliCalendar.formatNumber(ageMin.toDouble())} دقیقه پیش)"
+@@ -1344,7 +1354,7 @@ private fun SynopObsCard(synop: SynopObs?, modelCurrent: ModelCurrent?) {
+             if (modelCurrent != null) {
+                 HorizontalDivider(modifier = Modifier.padding(vertical = 10.dp), color = SlateBorder.copy(alpha = 0.3f))
+                 Text(
+-                    text = "🌐 خروجی مدل عددی (Current Open-Meteo):",
++                    text = "🌐 مدل پیش‌بینی برای همین الان:",
+                     style = MaterialTheme.typography.labelSmall,
+                     fontWeight = FontWeight.Bold,
+                     color = TextSecondary
+@@ -1353,17 +1363,17 @@ private fun SynopObsCard(synop: SynopObs?, modelCurrent: ModelCurrent?) {
+                     modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                     horizontalArrangement = Arrangement.SpaceBetween
+                 ) {
+-                    Text("دما: ${JalaliCalendar.formatNumber(modelCurrent.tempC)}°C", fontSize = 11.sp)
+-                    Text("نقطه شبنم: ${JalaliCalendar.formatNumber(modelCurrent.dewC)}°C", fontSize = 11.sp)
+-                    Text("رطوبت: ${JalaliCalendar.formatNumber(modelCurrent.rh)}٪", fontSize = 11.sp)
++                    Text("دما: ${JalaliCalendar.formatNumber(modelCurrent.tempC)}°C", fontSize = 12.sp)
++                    Text("نقطه شبنم: ${JalaliCalendar.formatNumber(modelCurrent.dewC)}°C", fontSize = 12.sp)
++                    Text("رطوبت: ${JalaliCalendar.formatNumber(modelCurrent.rh)}٪", fontSize = 12.sp)
+                 }
+                 Row(
+                     modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                     horizontalArrangement = Arrangement.SpaceBetween
+                 ) {
+-                    Text("تندباد: ${JalaliCalendar.formatNumber(modelCurrent.windGustKmh)} km/h", fontSize = 11.sp)
+-                    Text("باد: ${JalaliCalendar.formatNumber(modelCurrent.windSpeedKmh)} km/h", fontSize = 11.sp)
+-                    Text("ابر: ${JalaliCalendar.formatNumber(modelCurrent.cloudCover)}٪", fontSize = 11.sp)
++                    Text("تندباد: ${JalaliCalendar.formatNumber(modelCurrent.windGustKmh)} km/h", fontSize = 12.sp)
++                    Text("باد: ${JalaliCalendar.formatNumber(modelCurrent.windSpeedKmh)} km/h", fontSize = 12.sp)
++                    Text("ابر: ${JalaliCalendar.formatNumber(modelCurrent.cloudCover)}٪", fontSize = 12.sp)
+                 }
+             }
+         }
+@@ -1406,8 +1416,8 @@ private fun PatternConvectiveSummaryCard(pattern: PatternSummary) {
+                 Text("بیشینه بارش ۲۴h: ${JalaliCalendar.formatNumber(pattern.totalPrecip24hMax)} mm", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = SkyAccent)
+             }
+             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+-                Text("ساعت اوج بارش: ${pattern.peakPrecipTimeIran}", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+-                Text("ساعت اوج ناپایداری: ${pattern.peakTsTimeIran}", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
++                Text("ساعت اوج بارش: ${if (pattern.peakPrecipTimeIran == "—") "—" else JalaliCalendar.formatShort(pattern.peakPrecipTimeIran)}", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
++                Text("ساعت اوج ناپایداری: ${if (pattern.peakTsTimeIran == "—") "—" else JalaliCalendar.formatShort(pattern.peakTsTimeIran)}", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+             }
+             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                 Text("بیشینه تندباد: ${JalaliCalendar.formatNumber(pattern.maxGust24h)} km/h", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+@@ -1447,9 +1457,14 @@ private fun SourceHealthCard(sources: List<SourceHealth>, stats: VerificationSta
+                     horizontalArrangement = Arrangement.SpaceBetween,
+                     verticalAlignment = Alignment.CenterVertically
+                 ) {
+-                    Text(sh.source, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Medium)
++                    Column(modifier = Modifier.weight(1f)) {
++                        Text(PlainText.sourceNameFa(sh.source), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium)
++                        if (!sh.message.isNullOrBlank() && sh.status != SourceStatus.OK) {
++                            Text(sh.message, style = MaterialTheme.typography.labelSmall, color = TextSecondary)
++                        }
++                    }
+                     Row(verticalAlignment = Alignment.CenterVertically) {
+-                        Text(sh.status.name, style = MaterialTheme.typography.labelSmall, color = statusColor, fontWeight = FontWeight.Bold)
++                        Text(PlainText.statusFa(sh.status), style = MaterialTheme.typography.bodySmall, color = statusColor, fontWeight = FontWeight.Bold)
+                         Box(
+                             modifier = Modifier
+                                 .padding(start = 6.dp)
+@@ -1463,7 +1478,7 @@ private fun SourceHealthCard(sources: List<SourceHealth>, stats: VerificationSta
+ 
+             HorizontalDivider(modifier = Modifier.padding(vertical = 10.dp), color = SlateBorder.copy(alpha = 0.3f))
+ 
+-            Text("🎯 ارزیابی صحت پیش‌بینی و کالیبراسیون MOS:", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
++            Text("🎯 جزئیات فنی: دقت پیش‌بینی (برای بررسی، نه برای تصمیم روزانه)", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+             Spacer(modifier = Modifier.height(4.dp))
+             val calStatusText = stats?.calibrationStatusText ?: if (Calibration.enabled) "جدول کالیبره فعال است (ایستگاه صفی‌آباد 40794)" else "کالیبراسیون غیرفعال"
+             Text(
+@@ -1490,10 +1505,10 @@ private fun SourceHealthCard(sources: List<SourceHealth>, stats: VerificationSta
+                             horizontalAlignment = Alignment.CenterHorizontally
+                         ) {
+                             Text("افق ${b.leadBucket}h", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = SkyAccent)
+-                            Text("ثبت: ${b.totalForecasts}", fontSize = 9.sp, color = TextSecondary)
+-                            Text("ارزیابی: ${b.evaluatedForecasts}", fontSize = 9.sp, color = TextSecondary)
++                            Text("ثبت: ${b.totalForecasts}", fontSize = 12.sp, color = TextSecondary)
++                            Text("ارزیابی: ${b.evaluatedForecasts}", fontSize = 12.sp, color = TextSecondary)
+                             val brierStr = b.brierScore?.let { JalaliCalendar.formatNumber(it) } ?: "—"
+-                            Text("Brier: $brierStr", fontSize = 9.sp, color = Color.White)
++                            Text("Brier: $brierStr", fontSize = 12.sp, color = Color.White)
+                         }
+                     }
+                 }
+@@ -1542,7 +1557,7 @@ private fun RegionCoverageBottomSheetContent(onDismiss: () -> Unit) {
+                     text = "مختصات جغرافیایی: 32.2978N, 48.4283E (ارتفاع ۷۸ متر)",
+                     style = MaterialTheme.typography.labelSmall,
+                     color = TextSecondary,
+-                    fontSize = 10.sp
++                    fontSize = 12.sp
+                 )
+             }
+         }
+@@ -1610,9 +1625,10 @@ private fun SkyObservationBottomSheetContent(
+ ) {
+     val context = LocalContext.current
+     var photoBitmap by remember { mutableStateOf<Bitmap?>(null) }
+-    var direction by remember { mutableStateOf("بالای سر") }
+-    var phenomenon by remember { mutableStateOf("") }
+-    var userTempStr by remember { mutableStateOf("") }
++    // با چرخاندن گوشی پاک نشوند
++    var direction by rememberSaveable { mutableStateOf("بالای سر") }
++    var phenomenon by rememberSaveable { mutableStateOf("") }
++    var userTempStr by rememberSaveable { mutableStateOf("") }
+     var notes by remember { mutableStateOf("") }
+ 
+     val photoPickerLauncher = rememberLauncherForActivityResult(
+@@ -1620,10 +1636,18 @@ private fun SkyObservationBottomSheetContent(
+     ) { uri ->
+         if (uri != null) {
+             try {
++                // عکس دوربین (تا ۵۰ مگاپیکسل) کوچک‌شده باز شود تا حافظهٔ گوشی پر نشود
++                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
++                context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
++                var sample = 1
++                while (bounds.outWidth / (sample * 2) >= 800 && bounds.outHeight / (sample * 2) >= 800) sample *= 2
++                val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+                 context.contentResolver.openInputStream(uri)?.use { stream ->
+-                    photoBitmap = BitmapFactory.decodeStream(stream)
++                    photoBitmap = BitmapFactory.decodeStream(stream, null, opts)
+                 }
+-            } catch (_: Exception) {}
++            } catch (_: Exception) {
++                android.widget.Toast.makeText(context, "باز کردن عکس ممکن نشد", android.widget.Toast.LENGTH_SHORT).show()
++            }
+         }
+     }
+ 
+@@ -1634,7 +1658,7 @@ private fun SkyObservationBottomSheetContent(
+         verticalArrangement = Arrangement.spacedBy(10.dp)
+     ) {
+         Text("📷 دیده‌بان آسمان و ثبت مشاهده میدانی", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = SkyAccent)
+-        Text("گزارش شما برای ۶۰ دقیقه در کالیبراسیون رادار و پیش‌بینی استفاده می‌شود.", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
++        Text("گزارش شما تا ۶۰ دقیقه در هشدار اثر دارد. اگر باران گزارش کنید، هشدار دست‌کم نارنجی می‌شود.", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+ 
+         Text("الان چه می‌بینید؟", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, color = TextPrimary)
+         FlowRow(
+@@ -1690,12 +1714,13 @@ private fun SkyObservationBottomSheetContent(
+         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+             Button(
+                 onClick = {
+-                    onSubmit(photoBitmap, direction, phenomenon, userTempStr.toDoubleOrNull(), notes)
++                    onSubmit(photoBitmap, direction, phenomenon, PlainText.toLatinDigits(userTempStr).toDoubleOrNull(), notes)
++                    android.widget.Toast.makeText(context, "گزارش شما ثبت شد و تا ۶۰ دقیقه در هشدار اثر دارد.", android.widget.Toast.LENGTH_LONG).show()
+                 },
+                 enabled = phenomenon.isNotBlank(),
+                 modifier = Modifier.weight(1f)
+             ) {
+-                Text("ثبت و کالیبره")
++                Text("ثبت گزارش")
+             }
+             if (existingReport != null) {
+                 OutlinedButton(onClick = onClear) {
+@@ -1736,7 +1761,27 @@ private fun WeatherAlertBottomSheetContent(
+         }
+ 
+         if (feedbackMessage != null) {
+-            Text("📢 $feedbackMessage", style = MaterialTheme.typography.labelSmall, color = AmberStorm)
++            Text("📢 $feedbackMessage", style = MaterialTheme.typography.bodySmall, color = AmberStorm)
++        }
++
++        // وضعیت واقعی اجازهٔ اعلان + راه رفتن به تنظیمات
++        val sheetContext = LocalContext.current
++        val notifAllowed = androidx.core.app.NotificationManagerCompat.from(sheetContext).areNotificationsEnabled()
++        Text(
++            text = if (notifAllowed) "اجازهٔ اعلان: داده شده ✅" else "اجازهٔ اعلان: داده نشده ❌ (هشدارها نمی‌رسند)",
++            style = MaterialTheme.typography.bodySmall,
++            color = if (notifAllowed) EmeraldOk else CoralAlert
++        )
++        if (!notifAllowed) {
++            OutlinedButton(onClick = {
++                val intent = android.content.Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
++                    putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, sheetContext.packageName)
++                    addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
++                }
++                try { sheetContext.startActivity(intent) } catch (_: Exception) {}
++            }, modifier = Modifier.fillMaxWidth()) {
++                Text("باز کردن تنظیمات اعلان")
++            }
+         }
+ 
+         Card(
+diff --git a/app/src/main/java/com/amin/weather/ui/WeatherViewModel.kt b/app/src/main/java/com/amin/weather/ui/WeatherViewModel.kt
+index 18ce871..216febd 100644
+--- a/app/src/main/java/com/amin/weather/ui/WeatherViewModel.kt
++++ b/app/src/main/java/com/amin/weather/ui/WeatherViewModel.kt
+@@ -12,6 +12,7 @@ import com.amin.weather.core.ForecastDashboard
+ import com.amin.weather.core.ForecastEngine
+ import com.amin.weather.core.ForecastRange
+ import com.amin.weather.core.SkyObservationReport
++import com.amin.weather.core.Tuning
+ import com.amin.weather.core.WeatherNotificationManager
+ import com.amin.weather.core.WeatherRepository
+ import kotlinx.coroutines.flow.MutableStateFlow
+@@ -66,6 +67,15 @@ class WeatherViewModel(application: Application) : AndroidViewModel(application)
+         }
+     }
+ 
++    /** هنگام برگشت به اپ: اگر داده قدیمی‌تر از AUTO_REFRESH_MIN است، خودکار به‌روز کن */
++    fun refreshIfStale() {
++        val st = _uiState.value
++        if (st.isLoading || st.isRefreshing) return
++        val gen = st.dashboard?.generatedEpochSec ?: 0L
++        val ageMin = (System.currentTimeMillis() / 1000L - gen) / 60L
++        if (st.dashboard == null || st.dashboard.isStale || gen == 0L || ageMin >= Tuning.AUTO_REFRESH_MIN) refresh()
++    }
++
+     fun refresh(isInitial: Boolean = false) {
+         viewModelScope.launch {
+             _uiState.update {
+@@ -181,7 +191,8 @@ class WeatherViewModel(application: Application) : AndroidViewModel(application)
+         notes: String
+     ) {
+         viewModelScope.launch {
+-            val photoPath = bitmap?.let { repository.saveSkyObservationPhoto(it) }
++            // فشرده‌سازی و نوشتن عکس روی رشتهٔ ورودی/خروجی، نه رشتهٔ صفحه
++            val photoPath = bitmap?.let { b -> kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { repository.saveSkyObservationPhoto(b) } }
+ 
+             val nowUtc = SimpleDateFormat("yyyy-MM-dd'T'HH:mm", Locale.US).apply {
+                 timeZone = TimeZone.getTimeZone("UTC")
+@@ -197,7 +208,7 @@ class WeatherViewModel(application: Application) : AndroidViewModel(application)
+                 notes = notes,
+                 timestampIran = iranTime,
+                 createdAtEpochMs = System.currentTimeMillis(),
+-                isCalibrated = true
++                isCalibrated = false   // گزارش کاربر چیزی را کالیبره نمی‌کند؛ فقط ۶۰ دقیقه در هشدار اثر دارد
+             )
+             repository.saveSkyObservation(report)
+             refresh(isInitial = false)
+diff --git a/app/src/test/java/com/amin/weather/GoldenComputeTest.kt b/app/src/test/java/com/amin/weather/GoldenComputeTest.kt
+index 340e7bc..ecefcd7 100644
+--- a/app/src/test/java/com/amin/weather/GoldenComputeTest.kt
++++ b/app/src/test/java/com/amin/weather/GoldenComputeTest.kt
+@@ -98,7 +98,7 @@ class GoldenComputeTest {
+     private fun f(v: Double?) = v?.let { String.format(java.util.Locale.US, "%.3f", it) } ?: "null"
+ 
+     private fun render(d: ForecastDashboard): String = buildString {
+-        appendLine("verdict=${d.verdict.tier} | ${d.verdict.text} | ${d.verdict.advisoryNote}")
++        appendLine("verdict=${d.verdict.tier} | ${d.verdict.headline} | ${d.verdict.text} | ${d.verdict.advisoryNote}")
+         appendLine("radar=${d.radarNowcast.available} max=${d.radarNowcast.maxDbzInTarget} wet=${f(d.radarNowcast.wetFractionInTarget)} cells=${d.radarNowcast.cells.size} first=${d.radarNowcast.firstArrival?.let { "${it.etaMinLow}-${it.etaMinHigh}" }} | ${d.radarNowcast.statusText}")
+         appendLine("neigh=${d.neighbourhood.pointsWithRainNow}/${d.neighbourhood.totalPoints} models=${d.modelsAvailable}")
+         val p = d.pattern
+diff --git a/app/src/test/java/com/amin/weather/Stage1fTest.kt b/app/src/test/java/com/amin/weather/Stage1fTest.kt
+new file mode 100644
+index 0000000..716ec98
+--- /dev/null
++++ b/app/src/test/java/com/amin/weather/Stage1fTest.kt
+@@ -0,0 +1,61 @@
++package com.amin.weather
++
++import com.amin.weather.core.*
++import org.junit.Assert.*
++import org.junit.Test
++
++/** تست‌های اصلاحیهٔ ۱-و (زبان ساده و عنوان هشدار). */
++class Stage1fTest {
++    private val now = 1_794_085_200L   // 2026-11-07 21:00 UTC = 00:30 بامداد ۸ نوامبر به وقت ایران
++
++    private fun radar(available: Boolean = true, maxDbz: Int = -1, wet: Double = 0.0) =
++        RadarNowcastResult(available, 5, true, maxDbz, wet, 0.0)
++
++    @Test fun headline_synopRain_saysRainingNow() {
++        val s = SynopObs(now - 600, 17.0, 15.0, 90.0, null, null, 61, true, false, false, 1)
++        val v = ForecastEngine.decideTier(radar(), s, emptyList(), null, null, nowSec = now)
++        assertEquals(AlertTier.ORANGE, v.tier)
++        assertEquals("همین الان در منطقه باران می‌بارد", v.headline)
++    }
++
++    @Test fun headline_probOnly_saysLikely() {
++        val rows = List(12) { ForecastRow(0L, "", "", 70.0, 70.0, 0.5, 1.0, 20.0, dewC = 10.0, rh = 50.0, cloud = 90.0, gustKmh = 10.0, convScore = 0.0) }
++        val v = ForecastEngine.decideTier(radar(), null, rows, ForecastEngine.BlockStats(0.7, 0.0, 1.0, 0.0), null, nowSec = now)
++        assertEquals(AlertTier.ORANGE, v.tier)
++        assertEquals("بارش در ۶ ساعت آینده محتمل است", v.headline)
++    }
++
++    @Test fun headline_defaultsToTierTitle() {
++        assertEquals(AlertTier.GREEN.title, VerdictInfo(AlertTier.GREEN, "x").headline)
++    }
++
++    @Test fun noDbzInVerdictText() {
++        val v = ForecastEngine.decideTier(radar(maxDbz = 50, wet = 0.3), null, emptyList(), null, null, nowSec = now)
++        assertFalse(v.text, v.text.contains("dBZ"))
++    }
++
++    @Test fun intensityWords() {
++        assertEquals("سبک", PlainText.intensityFa(22))
++        assertEquals("متوسط", PlainText.intensityFa(32))
++        assertEquals("شدید", PlainText.intensityFa(40))
++        assertEquals("بسیار شدید", PlainText.intensityFa(50))
++        assertEquals("خیلی ضعیف", PlainText.intensityFa(null))
++    }
++
++    @Test fun latinDigits() {
++        assertEquals(25.5, PlainText.toLatinDigits("۲۵٫۵").toDouble(), 1e-9)
++        assertEquals(18.0, PlainText.toLatinDigits("١٨").toDouble(), 1e-9)
++    }
++
++    @Test fun hourLabels_todayTomorrow() {
++        // now = 00:30 ایران ۸ نوامبر؛ ساعت ۰۲:۳۰ همان روز = امروز
++        assertEquals("۰۲:۳۰", PlainText.hourLabelFa(now + 2 * 3600, now))
++        // ۲۴ ساعت بعد = فردا
++        assertEquals("فردا ۰۰:۳۰", PlainText.hourLabelFa(now + 24 * 3600, now))
++    }
++
++    @Test fun sourceNamesPersian() {
++        assertEquals("رادار", PlainText.sourceNameFa("rainviewer/radar"))
++        assertEquals("قطع", PlainText.statusFa(SourceStatus.FAILED))
++    }
++}
+diff --git a/app/src/test/resources/golden/compute_dashboard.txt b/app/src/test/resources/golden/compute_dashboard.txt
+index ac34a60..bd980b9 100644
+--- a/app/src/test/resources/golden/compute_dashboard.txt
++++ b/app/src/test/resources/golden/compute_dashboard.txt
+@@ -1,5 +1,5 @@
+ === A wet+cell+synopRain
+-verdict=ORANGE | هشدار نارنجی: ثبت بارش فعال در ایستگاه دیدبانی صفی‌آباد. | احتمال وقوع رگبار ناگهانی و تندباد موضعی وجود دارد.
++verdict=ORANGE | همین الان در منطقه باران می‌بارد | هشدار نارنجی: ثبت بارش فعال در ایستگاه دیدبانی صفی‌آباد. | احتمال وقوع رگبار ناگهانی و تندباد موضعی وجود دارد.
+ radar=false max=-1 wet=0.000 cells=0 first=null | رادار با مشاهدهٔ زمینی تناقض دارد (روی زمین باران گزارش شده ولی رادار اکویی نمی‌بیند)؛ در این نوبت از رادار استفاده نشد.
+ neigh=5/17 models=true
+ pattern=2026-11-08 00:30..2026-11-09 23:30 peak=2026-11-08 04:30/1.740 ts=2026-11-08 03:30/72.300 cape=699.500 tot=6.930/9.120 maxP=90.000 gust=44.000 conv=24 virga=0 | جمع‌بندی: هشدار نارنجی: ثبت بارش فعال در ایستگاه دیدبانی صفی‌آباد.
+@@ -57,7 +57,7 @@ H6 00:30 تا 05:30 src=🇪🇺 مدل اروپایی ECMWF pA=100.000 pP=88.00
+ H12 00:30 تا 11:30 src=🇪🇺 مدل اروپایی ECMWF pA=100.000 pP=88.000 a50=6.930 a90=9.120 t=22.000 18.000/22.000 td=16.000 rh=85.000 cl=90.000 g=44.000 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=72.300 پتانسیل رگبار همرفتی ⚡ v=false conf=41 [ECMWF IFS,DWD ICON,دیدبانی صفی‌آباد (SYNOP)] بارش باران 🌧️
+ H24 00:30 تا 23:30 src=🇪🇺 مدل اروپایی ECMWF pA=100.000 pP=88.000 a50=6.930 a90=9.120 t=22.000 14.000/22.000 td=16.000 rh=85.000 cl=90.000 g=44.000 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=72.300 پتانسیل رگبار همرفتی ⚡ v=false conf=41 [ECMWF IFS,DWD ICON,دیدبانی صفی‌آباد (SYNOP)] بارش باران 🌧️
+ === B dry+emptyRadar+synopDry
+-verdict=GREEN | در دایرهٔ ۲۰ کیلومتری شمس‌آباد بارشی دیده نمی‌شود و مدل‌ها برای ۱۲ ساعت آینده بارش قابل‌توجهی نشان نمی‌دهند. | مبنا: رادار و دیدبانی صفی‌آباد و مدل‌های پیش‌بینی.
++verdict=GREEN | بارشی در منطقه دیده نمی‌شود | در دایرهٔ ۲۰ کیلومتری شمس‌آباد بارشی دیده نمی‌شود و مدل‌ها برای ۱۲ ساعت آینده بارش قابل‌توجهی نشان نمی‌دهند. | مبنا: رادار و دیدبانی صفی‌آباد و مدل‌های پیش‌بینی.
+ radar=true max=-1 wet=0.000 cells=0 first=null | رادار: در تصویر آخر، لکهٔ بارشی در دایرهٔ ۲۰ کیلومتری دیده نمی‌شود. (تصویر رادار 5 دقیقه پیش)
+ neigh=0/17 models=true
+ pattern=2026-11-08 00:30..2026-11-09 23:30 peak=—/0.000 ts=—/11.100 cape=20.000 tot=0.000/0.000 maxP=2.100 gust=44.000 conv=0 virga=0 | مدل‌ها برای ۲۴ ساعت آینده بارش قابل‌توجهی پیش‌بینی نمی‌کنند.
+@@ -115,7 +115,7 @@ H6 00:30 تا 05:30 src=🇪🇺 مدل اروپایی ECMWF pA=2.100 pP=1.300 a
+ H12 00:30 تا 11:30 src=🇪🇺 مدل اروپایی ECMWF pA=2.100 pP=1.300 a50=0.000 a90=0.000 t=22.000 18.000/22.000 td=12.000 rh=45.000 cl=10.000 g=44.000 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 بدون بارش قابل‌توجه v=false conf=100 [رادار RainViewer,ECMWF IFS,DWD ICON,دیدبانی صفی‌آباد (SYNOP)] بدون بارش قابل‌توجه
+ H24 00:30 تا 23:30 src=🇪🇺 مدل اروپایی ECMWF pA=2.100 pP=1.300 a50=0.000 a90=0.000 t=22.000 14.000/22.000 td=12.000 rh=45.000 cl=10.000 g=44.000 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 بدون بارش قابل‌توجه v=false conf=100 [رادار RainViewer,ECMWF IFS,DWD ICON,دیدبانی صفی‌آباد (SYNOP)] بدون بارش قابل‌توجه
+ === C wet+emptyRadar(blind)+noSynop
+-verdict=ORANGE | هشدار نارنجی: مدل‌های پیش‌بینی احتمال بارش بالای ۶۰ درصد برای ۶ ساعت آینده محاسبه کرده‌اند. | احتمال وقوع رگبار ناگهانی و تندباد موضعی وجود دارد.
++verdict=ORANGE | بارش در ۶ ساعت آینده محتمل است | هشدار نارنجی: مدل‌های پیش‌بینی احتمال بارش بالای ۶۰ درصد برای ۶ ساعت آینده محاسبه کرده‌اند. | احتمال وقوع رگبار ناگهانی و تندباد موضعی وجود دارد.
+ radar=true max=-1 wet=0.000 cells=0 first=null | رادار: در تصویر آخر، لکهٔ بارشی در دایرهٔ ۲۰ کیلومتری دیده نمی‌شود. (تصویر رادار 5 دقیقه پیش)
+ neigh=5/17 models=true
+ pattern=2026-11-08 00:30..2026-11-09 23:30 peak=2026-11-08 04:30/1.740 ts=2026-11-08 03:30/72.300 cape=699.500 tot=6.930/9.120 maxP=88.000 gust=44.000 conv=24 virga=0 | جمع‌بندی: هشدار نارنجی: مدل‌های پیش‌بینی احتمال بارش بالای ۶۰ درصد برای ۶ ساعت آینده محاسبه کرده‌اند.
+@@ -173,8 +173,8 @@ H6 00:30 تا 05:30 src=🇪🇺 مدل اروپایی ECMWF pA=100.000 pP=88.00
+ H12 00:30 تا 11:30 src=🇪🇺 مدل اروپایی ECMWF pA=100.000 pP=88.000 a50=6.930 a90=9.120 t=22.000 18.000/22.000 td=16.000 rh=85.000 cl=90.000 g=44.000 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=72.300 پتانسیل رگبار همرفتی ⚡ v=false conf=56 [رادار RainViewer,ECMWF IFS,DWD ICON] بارش باران 🌧️
+ H24 00:30 تا 23:30 src=🇪🇺 مدل اروپایی ECMWF pA=100.000 pP=88.000 a50=6.930 a90=9.120 t=22.000 14.000/22.000 td=16.000 rh=85.000 cl=90.000 g=44.000 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=72.300 پتانسیل رگبار همرفتی ⚡ v=false conf=56 [رادار RainViewer,ECMWF IFS,DWD ICON] بارش باران 🌧️
+ === D wet+rainOverhead+userRain
+-verdict=ORANGE | هشدار نارنجی: بارش در محل شما (گزارش خودتان: باران، 10 دقیقه پیش). | احتمال وقوع رگبار ناگهانی و تندباد موضعی وجود دارد.
+-radar=true max=28 wet=0.160 cells=1 first=null | رادار: لکه بارشی با قدرت 28 dBZ داخل دایره ۲۰km شمس‌آباد رصد شد. (تصویر رادار 5 دقیقه پیش)
++verdict=ORANGE | همین الان در منطقه باران می‌بارد | هشدار نارنجی: بارش در محل شما (گزارش خودتان: باران، 10 دقیقه پیش). | احتمال وقوع رگبار ناگهانی و تندباد موضعی وجود دارد.
++radar=true max=28 wet=0.160 cells=1 first=null | رادار: بارش سبک داخل دایرهٔ ۲۰ کیلومتری شمس‌آباد. (تصویر رادار 5 دقیقه پیش)
+ neigh=5/17 models=true
+ pattern=2026-11-08 00:30..2026-11-09 23:30 peak=2026-11-08 04:30/1.740 ts=2026-11-08 03:30/72.300 cape=699.500 tot=6.930/9.120 maxP=88.000 gust=44.000 conv=24 virga=0 | جمع‌بندی: هشدار نارنجی: بارش در محل شما (گزارش خودتان: باران، 10 دقیقه پیش).
+ HOURLY 2026-11-08 00:30 src=📡 رادار زنده pA=70.800 pP=70.800 a50=1.360 a90=2.050 t=18.000 18.000/18.000 td=16.000 rh=85.000 cl=90.000 g=27.100 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=40.700 ناپایداری متوسط ☁️ v=false conf=56 [رادار RainViewer,ECMWF IFS,DWD ICON] بارش در رادار 📡
+@@ -231,7 +231,7 @@ H6 00:30 تا 05:30 src=📡 رادار زنده pA=100.000 pP=88.000 a50=6.390
+ H12 00:30 تا 11:30 src=📡 رادار زنده pA=100.000 pP=88.000 a50=6.930 a90=9.120 t=22.000 18.000/22.000 td=16.000 rh=85.000 cl=90.000 g=44.000 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=72.300 پتانسیل رگبار همرفتی ⚡ v=false conf=56 [رادار RainViewer,ECMWF IFS,DWD ICON] بارش باران 🌧️
+ H24 00:30 تا 23:30 src=📡 رادار زنده pA=100.000 pP=88.000 a50=6.930 a90=9.120 t=22.000 14.000/22.000 td=16.000 rh=85.000 cl=90.000 g=44.000 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=72.300 پتانسیل رگبار همرفتی ⚡ v=false conf=56 [رادار RainViewer,ECMWF IFS,DWD ICON] بارش باران 🌧️
+ === E dry+noRadar+noSynop
+-verdict=UNKNOWN | وضعیت زنده نامشخص است: رادار، دیدبانی صفی‌آباد در دسترس نیست. | پیش‌بینی مدل‌ها برای ۱۲ ساعت آینده نشانهٔ بارش قابل‌توجهی ندارد، اما مشاهدهٔ زنده‌ای برای تأیید نیست.
++verdict=UNKNOWN | وضعیت زنده نامشخص | وضعیت زنده نامشخص است: رادار، دیدبانی صفی‌آباد در دسترس نیست. | پیش‌بینی مدل‌ها برای ۱۲ ساعت آینده نشانهٔ بارش قابل‌توجهی ندارد، اما مشاهدهٔ زنده‌ای برای تأیید نیست.
+ radar=false max=-1 wet=0.000 cells=0 first=null | داده‌های راداری در دسترس نیست
+ neigh=0/17 models=true
+ pattern=2026-11-08 00:30..2026-11-09 23:30 peak=—/0.000 ts=—/11.100 cape=20.000 tot=0.000/0.000 maxP=0.000 gust=44.000 conv=0 virga=0 | مدل‌ها برای ۲۴ ساعت آینده بارش قابل‌توجهی پیش‌بینی نمی‌کنند.

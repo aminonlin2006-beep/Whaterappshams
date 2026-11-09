@@ -12,6 +12,12 @@ import com.amin.weather.ui.WeatherViewModel
 import com.amin.weather.ui.theme.DezfulWeatherTheme
 
 class MainActivity : ComponentActivity() {
+    override fun onResume() {
+        super.onResume()
+        // برگشت به اپ بعد از مدتی: دادهٔ قدیمی خودکار به‌روز شود
+        androidx.lifecycle.ViewModelProvider(this)[WeatherViewModel::class.java].refreshIfStale()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()

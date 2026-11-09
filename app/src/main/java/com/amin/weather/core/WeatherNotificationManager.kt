@@ -144,7 +144,7 @@ class WeatherNotificationManager(private val context: Context) {
         settings: AlertSettings
     ): AlertEvaluationResult {
         if (!settings.isEnabled) {
-            return AlertEvaluationResult(false, "", "", emptyList(), AlertTier.GREEN)
+            return AlertEvaluationResult(false, "", "", emptyList(), dashboard.verdict.tier)
         }
 
         val verdict = dashboard.verdict
@@ -185,18 +185,16 @@ class WeatherNotificationManager(private val context: Context) {
         val now = System.currentTimeMillis()
         val cooldownMs = 60 * 60 * 1000L // 60 minutes cooldown
 
-        val isTierEscalated = when {
-            result.alertTier == AlertTier.RED && lastTierName != "red" -> true
-            result.alertTier == AlertTier.ORANGE && (lastTierName == "green" || lastTierName == "yellow") -> true
-            else -> false
-        }
+        val lastSeverity = AlertTier.fromLevelName(lastTierName)?.severity ?: 0
+        val isTierEscalated = result.alertTier.severity > lastSeverity
 
         if (!force && (now - lastTime < cooldownMs) && !isTierEscalated) {
             return false
         }
 
         val sent = sendNotification(result)
-        if (sent) {
+        // اعلان آزمایشی (force) نباید زمان‌بندی هشدارهای واقعی را عقب بیندازد
+        if (sent && !force) {
             prefs.edit()
                 .putLong("last_alert_time", now)
                 .putString("last_alert_tier", result.alertTier.levelName)

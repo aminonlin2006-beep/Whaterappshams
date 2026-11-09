@@ -29,6 +29,7 @@ data class VerificationStats(
 object VerificationStore {
     private const val FILE_NAME = "verify.jsonl"
 
+    @Synchronized
     fun recordStandardWindows(
         context: Context,
         nowEpochSec: Long,
@@ -100,10 +101,7 @@ object VerificationStore {
         } catch (_: Exception) {}
     }
 
-    fun recordForecast(context: Context, targetEpochSec: Long, probPoint: Double?, amountP50: Double?) {
-        // Kept for backward compatibility
-    }
-
+    @Synchronized
     fun evaluateWithSynop(context: Context, synop: SynopObs) {
         if (synop.precipMm == null || synop.precipPeriodH !in Tuning.VERIFY_WINDOWS_H) return
         try {
@@ -132,6 +130,7 @@ object VerificationStore {
         } catch (_: Exception) {}
     }
 
+    @Synchronized
     fun computeStats(context: Context): VerificationStats {
         val calEnabled = Calibration.enabled
         val calStatus = if (calEnabled) "جدول کالیبراسیون فعال است" else "جدول کالیبراسیون غیرفعال است (عدم انطباق شرایط دامنه‌ای)"

@@ -41,7 +41,6 @@ data class RadarNowcastResult(
     val firstArrival: RadarCellInfo? = null,
     val statusText: String = "",
     val maxDbzNearPoint: Int = -1,
-    val upwindStrongEcho: Boolean = false,
     val coverageVerified: Boolean = true,
     val clutterPixelsRemoved: Int = 0
 )
@@ -207,7 +206,10 @@ object RadarAnalyzer {
             var wetPixels = 0
             for (idx in first.indices) if (first[idx] >= Tuning.DBZ_RAIN) wetPixels++
             val allIdentical = frames.drop(1).all { it.dbzGrid.contentEquals(first) }
-            if (allIdentical && wetPixels >= Tuning.RADAR_FROZEN_MIN_WET_PIXELS) {
+            // یخ‌زده: تصاویر یکسانِ دارای اکو؛ یا تصاویر یکسانِ کاملاً خالی وقتی مدل‌ها همین الان باران دارند
+            val frozenWithEcho = wetPixels >= Tuning.RADAR_FROZEN_MIN_WET_PIXELS
+            val blankWhileModelWet = wetPixels == 0 && modelDryNow == false
+            if (allIdentical && (frozenWithEcho || blankWhileModelWet)) {
                 return RadarNowcastResult(
                     available = false,
                     frameAgeMin = fetch.lastFrameAgeMin,
@@ -215,7 +217,10 @@ object RadarAnalyzer {
                     maxDbzInTarget = -1,
                     wetFractionInTarget = 0.0,
                     rainRateInTargetMmH = 0.0,
-                    statusText = "رادار به‌روز نمی‌شود (${frames.size} تصویر آخر کاملاً یکسان‌اند)؛ از رادار استفاده نشد.",
+                    statusText = if (frozenWithEcho)
+                        "رادار به‌روز نمی‌شود (${frames.size} تصویر آخر کاملاً یکسان‌اند)؛ از رادار استفاده نشد."
+                    else
+                        "رادار چند تصویر پشت‌سرهم کاملاً خالی است در حالی که مدل‌ها همین الان باران دارند؛ احتمالاً رادار این منطقه را نمی‌بیند. از رادار استفاده نشد.",
                     coverageVerified = fetch.coverageVerified
                 )
             }
@@ -254,7 +259,6 @@ object RadarAnalyzer {
         var wetPixelCountTarget = 0
         var totalPixelCountTarget = 0
         var sumRainRateTarget = 0.0
-        var upwindStrongEcho = false
 
         for (idx in 0 until (512 * 512)) {
             val dist = precomputedDistKm[idx]
@@ -271,14 +275,6 @@ object RadarAnalyzer {
 
             if (dist <= Tuning.POINT_RADIUS_KM && dbz >= Tuning.DBZ_RAIN) {
                 if (dbz > maxDbzNearPoint) maxDbzNearPoint = dbz
-            }
-
-            if (dbz >= Tuning.DBZ_STRONG) {
-                val bearing = precomputedBearingDeg[idx]
-                if (dist in Tuning.UPWIND_RING_MIN_KM..Tuning.RADAR_WATCH_RADIUS_KM &&
-                    bearing in Tuning.UPWIND_BEARING_MIN..Tuning.UPWIND_BEARING_MAX) {
-                    upwindStrongEcho = true
-                }
             }
         }
 
@@ -394,23 +390,21 @@ object RadarAnalyzer {
 
         val statusText = buildString {
             when {
-                maxDbzTarget >= Tuning.DBZ_SEVERE -> append("رادار: لکه بارشی شدیدی با قدرت $maxDbzTarget dBZ داخل دایره ۲۰km شمس‌آباد فعال است.")
-                maxDbzTarget >= Tuning.DBZ_RAIN -> append("رادار: لکه بارشی با قدرت $maxDbzTarget dBZ داخل دایره ۲۰km شمس‌آباد رصد شد.")
+                maxDbzTarget >= Tuning.DBZ_SEVERE -> append("رادار: بارش ${PlainText.intensityFa(maxDbzTarget)} داخل دایرهٔ ۲۰ کیلومتری شمس‌آباد.")
+                maxDbzTarget >= Tuning.DBZ_RAIN -> append("رادار: بارش ${PlainText.intensityFa(maxDbzTarget)} داخل دایرهٔ ۲۰ کیلومتری شمس‌آباد.")
                 firstArrival != null -> {
                     if (firstArrival.etaMinHigh == 0) {
-                        append("رادار: توده بارشی ${firstArrival.maxDbz} dBZ احتمالاً هم‌اکنون به محدوده رسیده است.")
+                        append("رادار: تودهٔ بارشی ${PlainText.intensityFa(firstArrival.maxDbz)} احتمالاً همین الان به منطقه رسیده است.")
                     } else {
-                        append("رادار: توده بارشی ${firstArrival.maxDbz} dBZ در ${firstArrival.distKm.toInt()}km (${firstArrival.directionFa})، ورود محتمل بین ${firstArrival.etaMinLow} تا ${firstArrival.etaMinHigh} دقیقه دیگر.")
+                        append("رادار: تودهٔ بارشی ${PlainText.intensityFa(firstArrival.maxDbz)} در ${firstArrival.distKm.toInt()} کیلومتری (${firstArrival.directionFa})؛ ورود محتمل ${firstArrival.etaMinLow} تا ${firstArrival.etaMinHigh} دقیقهٔ دیگر.")
                     }
                 }
-                shownCells.isNotEmpty() -> append("رادار: ${shownCells.size} توده بارشی خارج از دایره ۲۰km شمس‌آباد رصد شد.")
+                shownCells.isNotEmpty() -> append("رادار: ${shownCells.size} تودهٔ بارشی بیرون از دایرهٔ ۲۰ کیلومتری دیده می‌شود.")
                 else -> append("رادار: در تصویر آخر، لکهٔ بارشی در دایرهٔ ۲۰ کیلومتری دیده نمی‌شود.")
             }
-            if (clutterPixelsRemoved > 0) {
-                append(" ($clutterPixelsRemoved پیکسل کلاتر حذف شد)")
-            }
+            // تعداد پیکسل‌های حذف‌شدهٔ کلاتر فقط در کارت «جزئیات فنی» نمایش داده شود (clutterPixelsRemoved)
             if (!fetch.coverageVerified) {
-                append(" (پوشش رادار تایید نشده)")
+                append(" (معلوم نیست رادار این منطقه را پوشش می‌دهد)")
             }
             append(" (تصویر رادار ${frameAgeMin} دقیقه پیش)")
         }
@@ -426,7 +420,6 @@ object RadarAnalyzer {
             firstArrival = firstArrival,
             statusText = statusText,
             maxDbzNearPoint = maxDbzNearPoint,
-            upwindStrongEcho = upwindStrongEcho,
             coverageVerified = fetch.coverageVerified,
             clutterPixelsRemoved = clutterPixelsRemoved
         )
@@ -491,5 +484,40 @@ object RadarAnalyzer {
         val lon = GeoUtils.tileXToLon(minTileX + (px + 0.5) / 256.0, 7)
         val lat = GeoUtils.tileYToLat(minTileY + (py + 0.5) / 256.0, 7)
         return GeoUtils.toLocalKm(RegionConfig.CENTER.lat, RegionConfig.CENTER.lon, lat, lon)
+    }
+
+    /** محاسبه تحلیل پویا برای کادر دید (زوم اوت) */
+    fun computeViewportAnalysis(
+        nowcast: RadarNowcastResult,
+        zoomScale: Float,
+        cloudCoverPercent: Int?
+    ): ViewportAnalysis {
+        val radiusKm = (Tuning.TARGET_RADIUS_KM / zoomScale).toInt().coerceIn(10, 200)
+        val maxDbz = if (radiusKm <= 25) nowcast.maxDbzInTarget else {
+            val visibleCells = nowcast.cells.filter { it.distKm <= radiusKm }
+            visibleCells.maxOfOrNull { it.maxDbz }?.coerceAtLeast(nowcast.maxDbzInTarget) ?: nowcast.maxDbzInTarget
+        }
+        val cellCount = nowcast.cells.count { it.distKm <= radiusKm }
+
+        val summary = buildString {
+            append("کادر دید (${radiusKm}km): ")
+            if (maxDbz >= Tuning.DBZ_RAIN) {
+                append("بیشینه بارش ${PlainText.intensityFa(maxDbz)}")
+                if (cellCount > 0) append(" ($cellCount توده فعال)")
+            } else {
+                append("بدون پژواک بارشی قابل‌توجه")
+            }
+            if (cloudCoverPercent != null) {
+                append(" · پوشش ابر $cloudCoverPercent٪")
+            }
+        }
+
+        return ViewportAnalysis(
+            radiusKm = radiusKm,
+            maxDbzInView = maxDbz,
+            activeCellCount = cellCount,
+            cloudCoverAvgPercent = cloudCoverPercent,
+            summaryTextFa = summary
+        )
     }
 }

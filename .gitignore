@@ -2,8 +2,6 @@
 build/
 app/build/
 local.properties
-*.apk
-*.aab
 .idea/
 *.iml
 captures/

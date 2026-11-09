@@ -6,11 +6,13 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.amin.weather.core.AlertEvaluationResult
 import com.amin.weather.core.AlertSettings
+import com.amin.weather.core.AlertTier
 import com.amin.weather.core.ForecastColumn
 import com.amin.weather.core.ForecastDashboard
 import com.amin.weather.core.ForecastEngine
 import com.amin.weather.core.ForecastRange
 import com.amin.weather.core.SkyObservationReport
+import com.amin.weather.core.Tuning
 import com.amin.weather.core.WeatherNotificationManager
 import com.amin.weather.core.WeatherRepository
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -31,7 +33,7 @@ data class WeatherUiState(
     val isFromCache: Boolean = false,
     val errorMessage: String? = null,
     val selectedRange: ForecastRange = ForecastRange.HOURLY,
-    val selectedBottomTab: Int = 0, // 0: رادار و توده‌ها, 1: دیدبانی صفی‌آباد, 2: پتانسیل همرفتی
+    val selectedBottomTab: Int = 2, // 2: رادار جوی (صفحهٔ اختصاصی رادار منطبق بر فایل نمونه کاربر)
     val visibleColumns: Set<ForecastColumn> = ForecastColumn.entries
         .filter { it.defaultVisible }
         .toSet(),
@@ -65,6 +67,15 @@ class WeatherViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    /** هنگام برگشت به اپ: اگر داده قدیمی‌تر از AUTO_REFRESH_MIN است، خودکار به‌روز کن */
+    fun refreshIfStale() {
+        val st = _uiState.value
+        if (st.isLoading || st.isRefreshing) return
+        val gen = st.dashboard?.generatedEpochSec ?: 0L
+        val ageMin = (System.currentTimeMillis() / 1000L - gen) / 60L
+        if (st.dashboard == null || st.dashboard.isStale || gen == 0L || ageMin >= Tuning.AUTO_REFRESH_MIN) refresh()
+    }
+
     fun refresh(isInitial: Boolean = false) {
         viewModelScope.launch {
             _uiState.update {
@@ -82,8 +93,10 @@ class WeatherViewModel(application: Application) : AndroidViewModel(application)
                             dashboard = dashboard,
                             isLoading = false,
                             isRefreshing = false,
-                            isFromCache = false,
-                            errorMessage = null
+                            isFromCache = dashboard.isStale,
+                            errorMessage = if (dashboard.isStale)
+                                "اتصال برقرار نشد. اطلاعات نمایش‌داده‌شده مربوط به ${dashboard.dataAgeMin ?: "?"} دقیقه پیش است. اینترنت یا فیلترشکن را بررسی کنید."
+                            else null
                         )
                     }
                     evaluateAlerts(dashboard, sendSystemNotification = false)
@@ -95,9 +108,9 @@ class WeatherViewModel(application: Application) : AndroidViewModel(application)
                             isRefreshing = false,
                             isFromCache = it.dashboard != null,
                             errorMessage = if (it.dashboard != null) {
-                                "خطا در برقراری ارتباط: ${err.localizedMessage ?: "عدم پاسخ سرور"} (نمایش داده‌های کش)"
+                                "اتصال برقرار نشد؛ اطلاعات قبلی نمایش داده می‌شود. اینترنت یا فیلترشکن را بررسی کنید."
                             } else {
-                                err.localizedMessage ?: "خطا در دریافت اطلاعات هواشناسی. لطفاً اتصال اینترنت خود را بررسی نمایید."
+                                "دریافت اطلاعات هواشناسی ممکن نشد. اینترنت یا فیلترشکن را بررسی کنید و دوباره تلاش کنید."
                             }
                         )
                     }
@@ -153,7 +166,11 @@ class WeatherViewModel(application: Application) : AndroidViewModel(application)
             }
         } else {
             _uiState.update {
-                it.copy(alertFeedbackMessage = "در شرایط فعلی، هیچ هشدار فعالی شناسایی نشد (آسمان آرام).")
+                it.copy(alertFeedbackMessage = when {
+                    !settings.isEnabled -> "اعلان‌ها خاموش است. برای دریافت هشدار، کلید اعلان‌ها را روشن کنید."
+                    dashboard.verdict.tier == AlertTier.UNKNOWN -> "وضعیت فعلی نامشخص است (دادهٔ زنده در دسترس نیست)؛ اعلانی ارسال نشد."
+                    else -> "در شرایط فعلی هشدار فعالی وجود ندارد؛ اعلانی ارسال نشد."
+                })
             }
         }
     }
@@ -163,7 +180,7 @@ class WeatherViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun selectBottomTab(index: Int) {
-        _uiState.update { it.copy(selectedBottomTab = index.coerceIn(0, 2)) }
+        _uiState.update { it.copy(selectedBottomTab = index.coerceIn(0, 3)) }
     }
 
     fun submitSkyObservation(
@@ -174,7 +191,8 @@ class WeatherViewModel(application: Application) : AndroidViewModel(application)
         notes: String
     ) {
         viewModelScope.launch {
-            val photoPath = bitmap?.let { repository.saveSkyObservationPhoto(it) }
+            // فشرده‌سازی و نوشتن عکس روی رشتهٔ ورودی/خروجی، نه رشتهٔ صفحه
+            val photoPath = bitmap?.let { b -> kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { repository.saveSkyObservationPhoto(b) } }
 
             val nowUtc = SimpleDateFormat("yyyy-MM-dd'T'HH:mm", Locale.US).apply {
                 timeZone = TimeZone.getTimeZone("UTC")
@@ -190,7 +208,7 @@ class WeatherViewModel(application: Application) : AndroidViewModel(application)
                 notes = notes,
                 timestampIran = iranTime,
                 createdAtEpochMs = System.currentTimeMillis(),
-                isCalibrated = true
+                isCalibrated = false   // گزارش کاربر چیزی را کالیبره نمی‌کند؛ فقط ۶۰ دقیقه در هشدار اثر دارد
             )
             repository.saveSkyObservation(report)
             refresh(isInitial = false)

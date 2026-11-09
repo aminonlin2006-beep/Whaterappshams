@@ -133,6 +133,32 @@ class ForecastEngineTest {
     }
 
     @Test
+    fun testDecideTierYellowWhenRadarLightRainInTarget() {
+        val radar = RadarNowcastResult(
+            available = true,
+            frameAgeMin = 5,
+            coverageOk = true,
+            maxDbzInTarget = 22,
+            wetFractionInTarget = 0.03,
+            rainRateInTargetMmH = 0.2
+        )
+        val dummyRow = ForecastRow(
+            timeEpochSec = 1000L, timeIran = "", forecastSource = "",
+            probArea = 5.0, probPoint = 5.0, amountP50 = 0.0, amountP90 = 0.0,
+            tempC = 20.0, dewC = 10.0, rh = 50.0, cloud = 10.0, gustKmh = 10.0,
+            convScore = 0.0
+        )
+        val verdict = ForecastEngine.decideTier(
+            radar = radar,
+            synop = null,
+            rows = listOf(dummyRow)
+        )
+        assertEquals(AlertTier.YELLOW, verdict.tier)
+        assertTrue(verdict.text.contains("هشدار زرد") && verdict.text.contains("بارش سبک"))
+        assertEquals("بارش سبک در بخشی از منطقه", verdict.headline)
+    }
+
+    @Test
     fun testDecideTierUnknownWhenNoLiveObservations() {
         val unavailableRadar = RadarNowcastResult(
             available = false,
@@ -252,7 +278,7 @@ class ForecastEngineTest {
         val radarNotApproaching = RadarNowcastResult(
             available = true, frameAgeMin = 5, coverageOk = true,
             maxDbzInTarget = 0, wetFractionInTarget = 0.0, rainRateInTargetMmH = 0.0,
-            cells = listOf(cellNotApproaching), upwindStrongEcho = true
+            cells = listOf(cellNotApproaching)
         )
         val verdictNotApproaching = ForecastEngine.decideTier(
             radar = radarNotApproaching, synop = null, rows = listOf(dummyRow)

@@ -5,11 +5,23 @@ enum class AlertTier(
     val title: String,
     val hexColor: String
 ) {
-    GREEN("green", "آسمان آرام و پایدار", "#10B981"),
+    GREEN("green", "بارشی در منطقه دیده نمی‌شود", "#10B981"),
     UNKNOWN("unknown", "وضعیت زنده نامشخص", "#9CA3AF"),
     YELLOW("yellow", "احتمال رگبار موضعی و ناپایداری جوی", "#F59E0B"),
     ORANGE("orange", "توده بارشی در راه", "#F97316"),
-    RED("red", "هشدار فوری بارش/رعدوبرق در محدوده", "#EF4444")
+    RED("red", "هشدار فوری بارش/رعدوبرق در محدوده", "#EF4444");
+
+    /** رتبهٔ شدت برای مقایسه (تشدید هشدار). GREEN و UNKNOWN هر دو صفرند. */
+    val severity: Int get() = when (this) {
+        GREEN, UNKNOWN -> 0
+        YELLOW -> 1
+        ORANGE -> 2
+        RED -> 3
+    }
+
+    companion object {
+        fun fromLevelName(name: String?): AlertTier? = values().firstOrNull { it.levelName == name }
+    }
 }
 
 enum class ForecastRange(val key: String, val label: String) {
@@ -39,7 +51,9 @@ enum class ForecastColumn(val key: String, val label: String, val defaultVisible
 data class VerdictInfo(
     val tier: AlertTier,
     val text: String,
-    val advisoryNote: String = ""
+    val advisoryNote: String = "",
+    /** عنوان کوتاه کارت هشدار، ساخته‌شده از «دلیل» هشدار (نه فقط از سطح) */
+    val headline: String = tier.title
 )
 
 data class NeighbourhoodSummary(
@@ -135,5 +149,31 @@ data class ForecastDashboard(
     val ranges: Map<ForecastRange, List<ForecastRow>>,
     val sourceHealth: List<SourceHealth> = emptyList(),
     val verificationStats: VerificationStats? = null,
-    val userObservation: SkyObservationReport? = null
+    val userObservation: SkyObservationReport? = null,
+    val modelsAvailable: Boolean = true,   // false = هیچ مدل پیش‌بینی نرسید؛ جدول ساعتی و الگو باید «نامشخص» نشان دهند
+    val generatedEpochSec: Long = 0L,      // زمان محاسبه (برای به‌روزرسانی خودکار هنگام برگشت به اپ)
+    val isStale: Boolean = false,          // true = اتصال برقرار نشد و این دادهٔ ذخیره‌شدهٔ قبلی است
+    val dataAgeMin: Int? = null            // سن داده به دقیقه، وقتی isStale است
+)
+
+data class StationMapMarker(
+    val id: String,
+    val nameFa: String,
+    val lat: Double,
+    val lon: Double,
+    val isCenter: Boolean = false,
+    val isSynopStation: Boolean = false,
+    val tempC: Double? = null,
+    val rh: Double? = null,
+    val cloudCover: Double? = null,
+    val dbz: Int? = null,
+    val skyConditionFa: String = "آسمان پایدار"
+)
+
+data class ViewportAnalysis(
+    val radiusKm: Int,
+    val maxDbzInView: Int,
+    val activeCellCount: Int,
+    val cloudCoverAvgPercent: Int?,
+    val summaryTextFa: String
 )

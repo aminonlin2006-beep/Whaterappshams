@@ -11,6 +11,9 @@ import java.io.File
 import java.io.FileOutputStream
 
 class WeatherRepository(private val context: Context) {
+    private companion object {
+        val CACHE_LOCK = Any()
+    }
 
     private val cacheFile: File
         get() = File(context.filesDir, "forecast_cache_v5.json")
@@ -28,24 +31,30 @@ class WeatherRepository(private val context: Context) {
             if (json.optInt("schema", 0) != 5) return@withContext null
 
             val cachedAtMs = if (json.has("cachedAtMs")) json.optLong("cachedAtMs") else cacheFile.lastModified()
-            val cacheAgeMs = System.currentTimeMillis() - cachedAtMs
+            val nowSec = System.currentTimeMillis() / 1000L
+            val ageMin = ((System.currentTimeMillis() - cachedAtMs) / 60000L).toInt().coerceAtLeast(0)
             val dashboard = parseDashboard(json)
 
-            // If cache is older than 2 hours, disable stale radar nowcast info and re-evaluate verdict
-            if (cacheAgeMs > 2 * 3600 * 1000L) {
-                val staleRadar = dashboard.radarNowcast.copy(
-                    available = false,
-                    statusText = "داده‌های رادار به علت قدمت کش (بیش از ۲ ساعت) نمایش داده نمی‌شوند."
-                )
-                val hourly = dashboard.ranges[ForecastRange.HOURLY] ?: emptyList()
-                val newVerdict = ForecastEngine.decideTier(staleRadar, null, hourly, null, null, false)
-                dashboard.copy(
-                    radarNowcast = staleRadar,
-                    verdict = newVerdict
-                )
-            } else {
-                dashboard
-            }
+            // دادهٔ ذخیره‌شده: رادارش دیگر «زنده» نیست، ساعت‌های گذشته حذف می‌شوند،
+            // و هشدار با گزارش فعلی کاربر دوباره حساب می‌شود (بدون رادار و بدون صفی‌آباد کهنه).
+            val staleRadar = dashboard.radarNowcast.copy(
+                available = false,
+                cells = emptyList(),
+                firstArrival = null,
+                statusText = "دادهٔ رادار مربوط به ${ageMin} دقیقه پیش است و برای وضعیت فعلی استفاده نمی‌شود."
+            )
+            val futureHourly = (dashboard.ranges[ForecastRange.HOURLY] ?: emptyList())
+                .filter { it.timeEpochSec >= nowSec - 1800L }
+            val newVerdict = ForecastEngine.decideTier(
+                staleRadar, null, futureHourly, null, null, false, getSavedSkyObservation(), nowSec
+            )
+            dashboard.copy(
+                radarNowcast = staleRadar,
+                verdict = newVerdict,
+                ranges = dashboard.ranges + (ForecastRange.HOURLY to futureHourly),
+                isStale = true,
+                dataAgeMin = ageMin
+            )
         } catch (_: Exception) {
             null
         }
@@ -61,10 +70,22 @@ class WeatherRepository(private val context: Context) {
                     val json = serializeDashboard(dashboard)
                     json.put("schema", 5)
                     json.put("cachedAtMs", System.currentTimeMillis())
-                    cacheFile.writeText(json.toString())
+                    // Worker و صفحه ممکن است هم‌زمان بنویسند: یکی‌یکی، و اول در فایل موقت
+                    synchronized(CACHE_LOCK) {
+                        val tmp = File(cacheFile.parentFile, cacheFile.name + ".tmp")
+                        tmp.writeText(json.toString())
+                        if (!tmp.renameTo(cacheFile)) { cacheFile.writeText(json.toString()); tmp.delete() }
+                    }
                 } catch (_: Exception) {}
             }
+            // هیچ مدلی نرسید و مشاهدهٔ زنده هم چیزی نگفت ← دادهٔ ذخیره‌شده (با برچسب کهنه) مفیدتر است
+            if (!dashboard.modelsAvailable && dashboard.verdict.tier == AlertTier.UNKNOWN) {
+                val fallback = getCachedForecast()
+                if (fallback != null) return@withContext Result.success(fallback)
+            }
             Result.success(dashboard)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             val fallback = getCachedForecast()
             if (fallback != null && (fallback.ranges[ForecastRange.HOURLY]?.size ?: 0) > 0) {
@@ -119,7 +140,7 @@ class WeatherRepository(private val context: Context) {
         val ageMin = (System.currentTimeMillis() - createdAtMs) / (60 * 1000L)
 
         // Expire after USER_REPORT_TTL_MIN (60 minutes)
-        if (ageMin > Tuning.USER_REPORT_TTL_MIN) return null
+        if (ageMin >= Tuning.USER_REPORT_TTL_MIN || ageMin < -10) return null
 
         val phenomenon = skyPrefs.getString("phenomenon", "") ?: ""
         val direction = skyPrefs.getString("direction", "بالای سر") ?: "بالای سر"
@@ -157,8 +178,10 @@ class WeatherRepository(private val context: Context) {
             put("tier", d.verdict.tier.levelName)
             put("text", d.verdict.text)
             put("advisoryNote", d.verdict.advisoryNote)
+            put("headline", d.verdict.headline)
         }
         root.put("verdict", verdictObj)
+        root.put("generatedEpochSec", d.generatedEpochSec)
 
         val rObj = JSONObject().apply {
             put("available", d.radarNowcast.available)
@@ -230,9 +253,12 @@ class WeatherRepository(private val context: Context) {
             "orange" -> AlertTier.ORANGE
             "yellow" -> AlertTier.YELLOW
             "unknown" -> AlertTier.UNKNOWN
-            else -> AlertTier.GREEN
+            else -> AlertTier.UNKNOWN   // نامعلوم هرگز سبز نیست
         }
-        val verdict = VerdictInfo(alertTier, vObj.optString("text", ""), vObj.optString("advisoryNote", ""))
+        val verdict = VerdictInfo(
+            alertTier, vObj.optString("text", ""), vObj.optString("advisoryNote", ""),
+            vObj.optString("headline", alertTier.title)
+        )
 
         val rObj = root.optJSONObject("radarNowcast") ?: JSONObject()
         val radarNowcast = RadarNowcastResult(
@@ -307,6 +333,7 @@ class WeatherRepository(private val context: Context) {
             lat = lat,
             lon = lon,
             generatedIran = generatedIran,
+            generatedEpochSec = root.optLong("generatedEpochSec", 0L),
             verdict = verdict,
             radarNowcast = radarNowcast,
             neighbourhood = nSummary,

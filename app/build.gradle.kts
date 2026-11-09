@@ -11,8 +11,8 @@ android {
         applicationId = "com.amin.weather"
         minSdk = 24
         targetSdk = 36
-        versionCode = 3
-        versionName = "2.0-stage1b"
+        versionCode = 8
+        versionName = "2.0-stage1g"
     }
 
     buildTypes {

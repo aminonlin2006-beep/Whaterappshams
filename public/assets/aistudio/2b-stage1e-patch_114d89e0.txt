@@ -1,0 +1,1479 @@
+diff --git a/app/src/main/java/com/amin/weather/core/ForecastEngine.kt b/app/src/main/java/com/amin/weather/core/ForecastEngine.kt
+index 158f0d8..930b375 100644
+--- a/app/src/main/java/com/amin/weather/core/ForecastEngine.kt
++++ b/app/src/main/java/com/amin/weather/core/ForecastEngine.kt
+@@ -11,16 +11,24 @@ import kotlin.math.*
+ import kotlinx.coroutines.Dispatchers
+ import kotlinx.coroutines.async
+ import kotlinx.coroutines.coroutineScope
++import kotlinx.coroutines.withContext
+ 
+ object ForecastEngine {
+ 
+-    private val utcFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm", Locale.US).apply {
+-        timeZone = TimeZone.getTimeZone("UTC")
+-        isLenient = false   // تاریخ نامعتبر (مثل ۳۰ فوریه) بی‌صدا جابه‌جا نشود
++    // SimpleDateFormat امن برای چند رشته نیست (Worker و صفحه هم‌زمان صدا می‌زنند)؛ هر رشته نسخهٔ خودش را دارد
++    private val utcFormatTL = object : ThreadLocal<SimpleDateFormat>() {
++        override fun initialValue() = SimpleDateFormat("yyyy-MM-dd'T'HH:mm", Locale.US).apply {
++            timeZone = TimeZone.getTimeZone("UTC")
++            isLenient = false   // تاریخ نامعتبر (مثل ۳۰ فوریه) بی‌صدا جابه‌جا نشود
++        }
+     }
+-    private val iranFormat = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).apply {
+-        timeZone = TimeZone.getTimeZone("GMT+03:30")
++    private val iranFormatTL = object : ThreadLocal<SimpleDateFormat>() {
++        override fun initialValue() = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).apply {
++            timeZone = TimeZone.getTimeZone("GMT+03:30")
++        }
+     }
++    private val utcFormat: SimpleDateFormat get() = utcFormatTL.get()!!
++    private val iranFormat: SimpleDateFormat get() = iranFormatTL.get()!!
+ 
+     fun utcToIran(utcIso: String?): String {
+         if (utcIso.isNullOrBlank()) return ""
+@@ -61,6 +69,242 @@ object ForecastEngine {
+         return get(i)
+     }
+ 
++    /** (تعداد نقاط خیس، تعداد نقاط معتبر) در ساعت gIdx؛ اگر هیچ نقطهٔ معتبری نبود null */
++    internal fun wetCount(grid: ModelGrid?, gIdx: Int): Pair<Int, Int>? {
++        if (grid == null || gIdx < 0) return null
++        var valid = 0; var wet = 0
++        for (p in 0 until grid.pointCount) {
++            val v = grid.precip[p].getOrNull(gIdx) ?: continue
++            if (v.isNaN()) continue
++            valid++
++            if (v >= Tuning.WET_HOUR_MM) wet++
++        }
++        return if (valid > 0) Pair(wet, valid) else null
++    }
++
++    /** احتمال خیس بودن از اعضای ECMWF ENS با جمع ۳ ساعتهٔ منتهی به idx: (احتمال، تعداد اعضای معتبر) */
++    internal fun ensembleWetEcmwf3h(ens: EnsembleSet?, idx: Int): Pair<Double, Int>? {
++        if (ens == null || ens.times.isEmpty() || idx < 0) return null
++        var wetMem = 0; var validMem = 0
++        for (m in ens.members.indices) {
++            var sum3h = 0.0; var valid3h = 0
++            for (w in maxOf(0, idx - 2)..idx) {
++                val v = ens.members[m].at(w)
++                if (v != null) { sum3h += v; valid3h++ }
++            }
++            if (valid3h > 0) {
++                validMem++
++                if (sum3h >= Tuning.WET_3H_MM) wetMem++
++            }
++        }
++        return if (validMem > 0) Pair(wetMem.toDouble() / validMem, validMem) else null
++    }
++
++    /** احتمال خیس بودن از اعضای ICON EPS در همان ساعت: (احتمال، تعداد اعضای معتبر) */
++    internal fun ensembleWetIconHourly(ens: EnsembleSet?, idx: Int): Pair<Double, Int>? {
++        if (ens == null || ens.times.isEmpty() || idx < 0) return null
++        var wetMem = 0; var validMem = 0
++        for (m in ens.members.indices) {
++            val v = ens.members[m].at(idx) ?: continue
++            validMem++
++            if (v >= Tuning.WET_HOUR_MM) wetMem++
++        }
++        return if (validMem > 0) Pair(wetMem.toDouble() / validMem, validMem) else null
++    }
++
++    /** ترکیب دو مدل گروهی با وزن تعداد اعضای معتبر هر کدام */
++    internal fun combineEnsembles(a: Pair<Double, Int>?, b: Pair<Double, Int>?): Double? = when {
++        a != null && b != null -> (a.second * a.first + b.second * b.first) / (a.second + b.second)
++        a != null -> a.first
++        b != null -> b.first
++        else -> null
++    }
++
++    /** احتمال بارش از رادار برای ساعت step (فقط ۰ تا ۲)؛ null یعنی رادار حرفی برای این ساعت ندارد */
++    internal fun radarNowcastProb(radar: RadarNowcastResult, step: Int): Double? {
++        if (step >= Tuning.NOWCAST_WEIGHT.size || !radar.available) return null
++        if (step == 0 && radar.wetFractionInTarget >= Tuning.NOWCAST_WET_FRAC_MIN) {
++            return min(Tuning.NOWCAST_P_MAX, Tuning.NOWCAST_P_WET_BASE + Tuning.NOWCAST_P_WET_SLOPE * radar.wetFractionInTarget)
++        }
++        val arr = radar.firstArrival
++        val arrivesThisHour = arr != null && arr.etaMinLow != null && arr.etaMinLow <= (step + 1) * 60
++        return when {
++            arrivesThisHour && arr!!.maxDbz >= Tuning.DBZ_STRONG -> Tuning.NOWCAST_P_ARRIVAL_STRONG
++            arrivesThisHour && arr!!.maxDbz >= Tuning.DBZ_RAIN -> Tuning.NOWCAST_P_ARRIVAL
++            radar.cells.any { isNearMiss(it) } -> Tuning.NOWCAST_P_NEAR_MISS
++            radar.maxDbzInTarget < Tuning.DBZ_LIGHT && radar.cells.isEmpty() -> Tuning.NOWCAST_P_CLEAR
++            else -> null
++        }
++    }
++
++    /** سلولی که از کنار دایره رد می‌شود (حداقل فاصله تا مرکز ≤ شعاع + حاشیه) */
++    internal fun isNearMiss(c: RadarCellInfo): Boolean =
++        c.state == CellApproachState.WILL_MISS && c.minDistanceKm != null &&
++            c.minDistanceKm <= Tuning.TARGET_RADIUS_KM + Tuning.NEAR_MISS_MARGIN_KM
++
++    /** شاخص پتانسیل همرفتی ۰ تا ۱۰۰؛ بدون CAPE نامعلوم (null) */
++    internal fun convectiveScore(cape: Double?, cin: Double?, li: Double?, pEns: Double?, dewPoint: Double?, moistureInflow: Boolean): Double? {
++        if (cape == null) return null
++        var sc = 45.0 * (cape / 1500.0).coerceIn(0.0, 1.0)
++        if (li != null) sc += 15.0 * ((-li) / 6.0).coerceIn(0.0, 1.0)
++        if (pEns != null) sc += 25.0 * pEns
++        if (dewPoint != null) sc += 15.0 * ((dewPoint - 5.0) / 10.0).coerceIn(0.0, 1.0)
++        if (moistureInflow) sc += 10.0
++        sc = min(sc, 100.0)
++        if (cin != null && abs(cin) > 100.0) sc *= 0.6
++        return r1(sc)
++    }
++
++/** جمع‌بندی count ساعت اول (بازه‌های ۱ تا ۲۴ ساعته) */
++internal fun buildBlock(rows: List<ForecastRow>, ensembles: List<EnsembleSet?>, count: Int): ForecastRow? {
++        val subList = rows.take(minOf(count, rows.size))
++        if (subList.isEmpty()) return null
++
++        val startEpoch = subList.first().timeEpochSec - 3600L
++        val endEpoch = subList.last().timeEpochSec
++        val bs = blockStats(ensembles, startEpoch, endEpoch, Tuning.WET_HOUR_MM, Tuning.HEAVY_6H_MM)
++
++        val maxHourlyProbArea = subList.mapNotNull { it.probArea?.let { p -> p / 100.0 } }.maxOrNull()
++        val blockProbAreaFrac = when {
++            bs.pWet != null && maxHourlyProbArea != null -> max(bs.pWet, maxHourlyProbArea)
++            bs.pWet != null -> bs.pWet
++            maxHourlyProbArea != null -> maxHourlyProbArea
++            else -> null
++        }
++
++        val maxHourlyProbPoint = subList.mapNotNull { it.probPoint?.let { p -> p / 100.0 } }.maxOrNull()
++
++        val sumHourlyP50 = subList.mapNotNull { it.amountP50 }.let { if (it.isNotEmpty()) it.sum() else null }
++
++        val blockAmountP50 = bs.p50 ?: sumHourlyP50
++        val blockAmountP90 = if (bs.p90 != null && sumHourlyP50 != null) max(bs.p90, sumHourlyP50) else bs.p90
++
++        val tempMapList = subList.mapNotNull { it.tempC }
++        val minT = tempMapList.minOrNull()
++        val maxT = tempMapList.maxOrNull()
++
++        val gustList = subList.mapNotNull { it.gustKmh }
++        val maxGustVal = gustList.maxOrNull()
++
++        val convList = subList.mapNotNull { it.convScore }
++        val maxConv = convList.maxOrNull()
++
++        val anyVirga = subList.any { it.virgaRisk }
++        val first = subList.first()
++        val last = subList.last()
++
++        val dirList = subList.mapNotNull { it.windDirFromDeg }
++        val dominantDir = if (dirList.isNotEmpty()) {
++            var sumSin = 0.0
++            var sumCos = 0.0
++            for (d in dirList) {
++                val rad = Math.toRadians(d)
++                sumSin += sin(rad)
++                sumCos += cos(rad)
++            }
++            (Math.toDegrees(atan2(sumSin, sumCos)) + 360.0) % 360.0
++        } else null
++
++        return ForecastRow(
++            timeEpochSec = first.timeEpochSec,
++            timeIran = "${first.timeIran.takeLast(5)} تا ${last.timeIran.takeLast(5)}",
++            forecastSource = first.forecastSource,
++            probArea = blockProbAreaFrac?.let { r1(it * 100.0) },
++            probPoint = maxHourlyProbPoint?.let { r1(it * 100.0) },
++            amountP50 = blockAmountP50?.let { r2(it) },
++            amountP90 = blockAmountP90?.let { r2(it) },
++            tempC = maxT,
++            tempMinC = minT,
++            tempMaxC = maxT,
++            dewC = first.dewC,
++            rh = first.rh,
++            cloud = first.cloud,
++            gustKmh = maxGustVal,
++            windSpeedKmh = first.windSpeedKmh,
++            windDirFromDeg = dominantDir?.let { r1(it) },
++            windDirLabel = dominantDir?.let { GeoUtils.dir16Fa(it) },
++            convScore = maxConv,
++            convLabel = if (maxConv == null && blockAmountP50 == null) "نامشخص" else if ((maxConv ?: 0.0) >= Tuning.CONV_MODERATE || (blockAmountP90 ?: 0.0) >= 1.0) "پتانسیل رگبار همرفتی ⚡" else if ((blockAmountP50 ?: 0.0) > 0.1) "بارش باران 🌧️" else "بدون بارش قابل‌توجه",
++            virgaRisk = anyVirga,
++            confidence = first.confidence,
++            sources = first.sources,
++            eventLabel = if (blockAmountP50 == null) "نامشخص" else if (blockAmountP50 > 0.1) "بارش باران 🌧️" else "بدون بارش قابل‌توجه"
++        )
++    }
++
++    /** سهم نقاط خیس ECMWF، کالیبره‌شده با جدول MOS صفی‌آباد (اگر برای این ماه فعال باشد) */
++    internal fun calibratedNeighProb(pNeigh: Double?, grid: ModelGrid?, gIdx: Int, month: Int): Double? {
++        if (pNeigh == null || grid == null || !Calibration.appliesTo(month)) return pNeigh
++        val w = Calibration.windowHours
++        val p6 = windowWetFraction(grid, gIdx, w, Calibration.wetThresholdMm) ?: return pNeigh
++        val c6 = Calibration.calibrateProb(p6)
++        val floor = Calibration.probAtZero() / w
++        return if (p6 <= 0.0) floor else max(floor, min(c6, pNeigh * c6 / p6))
++    }
++
++    /**
++     * مقدار بارش ساعتی P50/P90 از مدل‌ها: اعضای ICON EPS (ساعتی) + اعضای ECMWF ENS (میانگین ۳ ساعته)
++     * + HRES مرکز (با تصحیح مقدار کالیبراسیون) + نقطهٔ مرکزی ICON؛ P90 دست‌کم بیشینهٔ HRES در ۱۷ نقطه.
++     */
++    internal fun modelAmountPercentiles(
++        ensI: EnsembleSet?, idxI: Int, ensE: EnsembleSet?, idxE: Int,
++        center: CenterDetail?, idxC: Int, gridI: ModelGrid?, gIdxI: Int, gridE: ModelGrid?, gIdxE: Int, month: Int
++    ): Pair<Double?, Double?> {
++        val memberValues = mutableListOf<Double>()
++        if (ensI != null && ensI.times.isNotEmpty() && idxI >= 0) {
++            for (m in ensI.members.indices) {
++                val v = ensI.members[m].at(idxI)
++                if (v != null) memberValues.add(v)
++            }
++        }
++        if (ensE != null && ensE.times.isNotEmpty() && idxE >= 2) {
++            for (m in ensE.members.indices) {
++                val a = ensE.members[m].at(idxE)
++                val b = ensE.members[m].at(idxE - 1)
++                val c = ensE.members[m].at(idxE - 2)
++                if (a != null && b != null && c != null) {
++                    memberValues.add((a + b + c) / 3.0)
++                }
++            }
++        }
++
++        val centerPrecipEcmwfRaw = center?.precip.at(idxC)
++        val hresCenter: Double? = centerPrecipEcmwfRaw?.let { raw ->
++            if (!Calibration.qmEnabled || !Calibration.appliesTo(month)) raw
++            else {
++                val W = Calibration.windowHours
++                val start = idxC - W + 1
++                val window = if (start >= 0) (start..idxC).map { center?.precip.at(it) } else null
++                if (window == null || window.any { it == null }) raw
++                else {
++                    val aW = window.sumOf { it!! }
++                    if (aW < 0.1) raw else raw * (Calibration.calibrateAmount(aW) / aW)
++                }
++            }
++        }
++        val iconCenter = gridI?.precip?.getOrNull(0)?.at(gIdxI)
++
++        hresCenter?.let(memberValues::add)
++        iconCenter?.let(memberValues::add)
++
++        val amtP50: Double? = if (memberValues.isNotEmpty()) percentile(memberValues, 0.5) else null
++        var amtP90: Double? = if (memberValues.isNotEmpty()) percentile(memberValues, 0.9) else null
++
++        val hresNeighMax = gridE?.let { grid ->
++            if (gIdxE >= 0) {
++                (0 until grid.pointCount).mapNotNull { p -> grid.precip[p].at(gIdxE) }.maxOrNull()
++            } else null
++        }
++        if (amtP90 != null && hresNeighMax != null) {
++            amtP90 = max(amtP90!!, hresNeighMax)
++        }
++        return Pair(amtP50, amtP90)
++    }
++
++    /** اندیس ساعتی از آرایهٔ زمان‌ها که به t نزدیک‌تر از نیم ساعت است؛ وگرنه ۱- */
++    internal fun hourIndex(times: LongArray?, t: Long): Int =
++        times?.indexOfFirst { abs(it - t) < 1800L } ?: -1
++
+     /** سهم نقاط بارانی در ساعت gIdx؛ اگر نقاط معتبر کمتر از حد بود null */
+     private fun wetFraction(grid: ModelGrid?, gIdx: Int): Double? {
+         if (grid == null || gIdx < 0) return null
+@@ -149,15 +393,21 @@ object ForecastEngine {
+     /**
+      * Builds complete forecast dashboard dataset
+      */
+-    suspend fun buildDashboardData(
+-        context: Context? = null,
+-        userObservation: SkyObservationReport? = null
+-    ): ForecastDashboard = coroutineScope {
+-        val sourceHealthList = mutableListOf<SourceHealth>()
++    /** همهٔ ورودی‌های خام موتور؛ یک بار دریافت می‌شوند و محاسبه روی آن‌ها خالص است. */
++    data class EngineInputs(
++        val neighRes: SourceResult<Map<String, ModelGrid>>,
++        val centerRes: SourceResult<CenterDetail>,
++        val liftedIndexRes: SourceResult<Pair<LongArray, DoubleArray>>,
++        val steeringRes: SourceResult<SteeringWind>,
++        val ensEcmwfRes: SourceResult<EnsembleSet>,
++        val ensIconRes: SourceResult<EnsembleSet>,
++        val synopRes: SourceResult<SynopObs>,
++        val radarRes: SourceResult<RadarFetch>
++    )
+ 
++    /** فقط دریافت هم‌زمان داده‌ها از منابع؛ هیچ محاسبه‌ای این‌جا نیست. */
++    suspend fun fetchInputs(context: Context?): EngineInputs = coroutineScope {
+         val cacheDir: File? = context?.filesDir
+-
+-        // 1. Fetch data from clients concurrently in parallel
+         val neighDeferred = async(Dispatchers.IO) { OpenMeteoClient.fetchNeighbourhood() }
+         val centerDeferred = async(Dispatchers.IO) { OpenMeteoClient.fetchCenterDetail() }
+         val liftedIndexDeferred = async(Dispatchers.IO) { OpenMeteoClient.fetchLiftedIndex() }
+@@ -166,22 +416,48 @@ object ForecastEngine {
+         val ensIconDeferred = async(Dispatchers.IO) { OpenMeteoClient.fetchEnsemble("icon_seamless") }
+         val synopDeferred = async(Dispatchers.IO) { SynopClient.fetchLatestSynop(cacheDir) }
+         val radarDeferred = async(Dispatchers.IO) { RadarClient.fetchRadarFrames(cacheDir) }
++        EngineInputs(
++            neighDeferred.await(), centerDeferred.await(), liftedIndexDeferred.await(), steeringDeferred.await(),
++            ensEcmwfDeferred.await(), ensIconDeferred.await(), synopDeferred.await(), radarDeferred.await()
++        )
++    }
++
++    /**
++     * Builds complete forecast dashboard dataset
++     */
++    suspend fun buildDashboardData(
++        context: Context? = null,
++        userObservation: SkyObservationReport? = null
++    ): ForecastDashboard {
++        val inputs = fetchInputs(context)
++        val nowEpochSec = System.currentTimeMillis() / 1000L   // تنها جایی که «اکنون» خوانده می‌شود
++        return withContext(Dispatchers.Default) {   // محاسبهٔ سنگین (رادار ۵۱۲×۵۱۲) روی رشتهٔ محاسباتی
++            computeDashboard(inputs, userObservation, nowEpochSec, context)
++        }
++    }
+ 
+-        val neighRes = neighDeferred.await()
+-        val centerRes = centerDeferred.await()
+-        val liftedIndexRes = liftedIndexDeferred.await()
+-        val steeringRes = steeringDeferred.await()
+-        val ensEcmwfRes = ensEcmwfDeferred.await()
+-        val ensIconRes = ensIconDeferred.await()
+-        val synopRes = synopDeferred.await()
+-        val radarRes = radarDeferred.await()
++    /** محاسبهٔ کامل داشبورد از ورودی‌های خام، با «اکنون» ثابت. (context فقط برای کالیبراسیون و ارزیابی) */
++    fun computeDashboard(
++        inputs: EngineInputs,
++        userObservation: SkyObservationReport?,
++        nowEpochSec: Long,
++        context: Context? = null
++    ): ForecastDashboard {
++        val sourceHealthList = mutableListOf<SourceHealth>()
++        val neighRes = inputs.neighRes
++        val centerRes = inputs.centerRes
++        val liftedIndexRes = inputs.liftedIndexRes
++        val steeringRes = inputs.steeringRes
++        val ensEcmwfRes = inputs.ensEcmwfRes
++        val ensIconRes = inputs.ensIconRes
++        val synopRes = inputs.synopRes
++        val radarRes = inputs.radarRes
+ 
+-        val nowEpochSec = System.currentTimeMillis() / 1000L
+         val synop = synopRes.data
+         val synopAgeMin = synop?.let { ((nowEpochSec - it.timeUtcEpochSec) / 60L).toInt() }
+         val (synopHealthStatus, synopHealthMsg) = when {
+             synop == null -> Pair(synopRes.status, synopRes.message)
+-            synopAgeMin != null && synopAgeMin > Tuning.SYNOP_DISPLAY_FRESH_MIN ->
++            !Freshness.isSynopFresh(synop, nowEpochSec) ->
+                 Pair(SourceStatus.PARTIAL, "آخرین گزارش ${JalaliCalendar.formatNumber(synopAgeMin)} دقیقه پیش — کهنه")
+             synopAgeMin != null ->
+                 Pair(synopRes.status, "آخرین گزارش: ${JalaliCalendar.formatNumber(synopAgeMin)} دقیقه پیش")
+@@ -206,25 +482,13 @@ object ForecastEngine {
+         val ecmwfGrid = neighMap["ecmwf"]
+         val iconGrid = neighMap["icon"]
+ 
+-        val modelDryNow: Boolean? = ecmwfGrid?.let { grid ->
+-            val gIdx = grid.times.indexOfFirst { abs(it - nowEpochSec) < 1800L }
+-            if (gIdx >= 0) {
+-                var hasValid = false
+-                var allDry = true
+-                for (p in 0 until grid.pointCount) {
+-                    val pr = grid.precip[p].getOrNull(gIdx) ?: continue
+-                    if (!pr.isNaN()) {
+-                        hasValid = true
+-                        if (pr >= Tuning.WET_HOUR_MM) { allDry = false; break }
+-                    }
+-                }
+-                if (hasValid) allDry else null
+-            } else null
+-        }
++        // مدل ECMWF همین الان در همهٔ نقاط خشک است؟ (null = دادهٔ معتبر نیست)
++        val wetCountNow = wetCount(ecmwfGrid, hourIndex(ecmwfGrid?.times, nowEpochSec))
++        val modelDryNow: Boolean? = wetCountNow?.let { (wet, _) -> wet == 0 }
+ 
+         var radarNowcast = RadarAnalyzer.analyzeNowcast(radarRes.data, steeringWind, modelDryNow, nowEpochSec)
+ 
+-        val modelWetFracNow = ecmwfGrid?.let { g -> wetFraction(g, g.times.indexOfFirst { abs(it - nowEpochSec) < 1800L }) }
++        val modelWetFracNow = wetFraction(ecmwfGrid, hourIndex(ecmwfGrid?.times, nowEpochSec))
+         radarNowcast = applyRadarTrustChecks(radarNowcast, synop, userObservation, modelWetFracNow, nowEpochSec)
+ 
+         if (context != null) {
+@@ -236,21 +500,21 @@ object ForecastEngine {
+ 
+         val nowIranStr = epochToIran(nowEpochSec)
+ 
+-        val cal = Calendar.getInstance(TimeZone.getTimeZone("GMT+03:30"))
++        val cal = Calendar.getInstance(TimeZone.getTimeZone("GMT+03:30")).apply { timeInMillis = nowEpochSec * 1000L }
+         val currentMonth = cal.get(Calendar.MONTH) + 1
+ 
+         // 4. Base time axis from first available source
+         val baseTimesOrNull: LongArray? = centerDetail?.times
+             ?: ecmwfGrid?.times ?: iconGrid?.times ?: ensIcon?.times ?: ensEcmwf?.times
+         var nowHourIndex = baseTimesOrNull?.let { bt ->
+-            val i = bt.indexOfFirst { abs(it - nowEpochSec) < 1800L }
++            val i = hourIndex(bt, nowEpochSec)
+             if (i >= 0) i else bt.indexOfFirst { it >= nowEpochSec - 1800L }
+         } ?: -1
+ 
+         // بدون مدل هم هشدار از مشاهده‌ها (صفی‌آباد، گزارش کاربر، رادار) ساخته شود؛ هرگز خطا نده
+         if (baseTimesOrNull == null || nowHourIndex < 0) {
+             val verdict = decideTier(radarNowcast, synop, emptyList(), null, null, false, userObservation, nowEpochSec)
+-            return@coroutineScope ForecastDashboard(
++            return ForecastDashboard(
+                 generatedIran = nowIranStr,
+                 verdict = verdict,
+                 radarNowcast = radarNowcast,
+@@ -287,13 +551,13 @@ object ForecastEngine {
+             val hEpoch = if (idxBase < baseTimes.size) baseTimes[idxBase] else nowEpochSec + step * 3600L
+             val hIran = epochToIran(hEpoch)
+ 
+-            val idxCenter = centerDetail?.times?.indexOfFirst { abs(it - hEpoch) < 1800L } ?: -1
+-            val gIdxEcmwf = ecmwfGrid?.times?.indexOfFirst { abs(it - hEpoch) < 1800L } ?: -1
+-            val gIdxIcon = iconGrid?.times?.indexOfFirst { abs(it - hEpoch) < 1800L } ?: -1
+-            val eIdxEcmwf = ensEcmwf?.times?.indexOfFirst { abs(it - hEpoch) < 1800L } ?: -1
+-            val eIdxIcon = ensIcon?.times?.indexOfFirst { abs(it - hEpoch) < 1800L } ?: -1
+-            val idxSteering = steeringWind?.times?.indexOfFirst { abs(it - hEpoch) < 1800L } ?: -1
+-            val idxLi = liftedIndexData?.first?.indexOfFirst { abs(it - hEpoch) < 1800L } ?: -1
++            val idxCenter = hourIndex(centerDetail?.times, hEpoch)
++            val gIdxEcmwf = hourIndex(ecmwfGrid?.times, hEpoch)
++            val gIdxIcon = hourIndex(iconGrid?.times, hEpoch)
++            val eIdxEcmwf = hourIndex(ensEcmwf?.times, hEpoch)
++            val eIdxIcon = hourIndex(ensIcon?.times, hEpoch)
++            val idxSteering = hourIndex(steeringWind?.times, hEpoch)
++            val idxLi = hourIndex(liftedIndexData?.first, hEpoch)
+ 
+             val temp = centerDetail?.temp.at(idxCenter)
+             val rh = centerDetail?.rh.at(idxCenter)
+@@ -312,60 +576,12 @@ object ForecastEngine {
+             val pNeighEcmwf = wetFraction(ecmwfGrid, gIdxEcmwf)
+             val pNeighIcon = wetFraction(iconGrid, gIdxIcon)
+ 
+-            // 4.2 Ensemble probability
+-            var pEnsEcmwf: Double? = null
+-            if (ensEcmwf != null && ensEcmwf.times.isNotEmpty() && eIdxEcmwf >= 0) {
+-                var wetMem = 0
+-                var validMem = 0
+-                for (m in ensEcmwf.members.indices) {
+-                    var sum3h = 0.0
+-                    var valid3h = 0
+-                    for (w in maxOf(0, eIdxEcmwf - 2)..eIdxEcmwf) {
+-                        val v = ensEcmwf.members[m].at(w)
+-                        if (v != null) {
+-                            sum3h += v
+-                            valid3h++
+-                        }
+-                    }
+-                    if (valid3h > 0) {
+-                        validMem++
+-                        if (sum3h >= Tuning.WET_3H_MM) wetMem++
+-                    }
+-                }
+-                if (validMem > 0) pEnsEcmwf = wetMem.toDouble() / validMem
+-            }
+-
+-            var pEnsIcon: Double? = null
+-            if (ensIcon != null && ensIcon.times.isNotEmpty() && eIdxIcon >= 0) {
+-                var wetMem = 0
+-                var validMem = 0
+-                for (m in ensIcon.members.indices) {
+-                    val v = ensIcon.members[m].at(eIdxIcon)
+-                    if (v != null) {
+-                        validMem++
+-                        if (v >= Tuning.WET_HOUR_MM) wetMem++
+-                    }
+-                }
+-                if (validMem > 0) pEnsIcon = wetMem.toDouble() / validMem
+-            }
+-
+-            val pEns = when {
+-                pEnsEcmwf != null && pEnsIcon != null -> (51.0 * pEnsEcmwf + 40.0 * pEnsIcon) / 91.0
+-                pEnsEcmwf != null -> pEnsEcmwf
+-                pEnsIcon != null -> pEnsIcon
+-                else -> null
+-            }
++            // 4.2 Ensemble probability (وزن هر مدل = تعداد اعضای معتبرش)
++            val ensE = ensembleWetEcmwf3h(ensEcmwf, eIdxEcmwf)
++            val ensI = ensembleWetIconHourly(ensIcon, eIdxIcon)
++            val pEns = combineEnsembles(ensE, ensI)
+ 
+-            val pNeighEcmwfCal: Double? = if (pNeighEcmwf != null && ecmwfGrid != null && Calibration.appliesTo(currentMonth)) {
+-                val W = Calibration.windowHours
+-                val p6 = windowWetFraction(ecmwfGrid, gIdxEcmwf, W, Calibration.wetThresholdMm)
+-                if (p6 == null) pNeighEcmwf
+-                else {
+-                    val c6 = Calibration.calibrateProb(p6)
+-                    val floor = Calibration.probAtZero() / W
+-                    if (p6 <= 0.0) floor else max(floor, min(c6, pNeighEcmwf * c6 / p6))
+-                }
+-            } else pNeighEcmwf
++            val pNeighEcmwfCal: Double? = calibratedNeighProb(pNeighEcmwf, ecmwfGrid, gIdxEcmwf, currentMonth)
+ 
+             // 4.3 Combined model area probability
+             var wSum = 0.0
+@@ -386,39 +602,23 @@ object ForecastEngine {
+             }
+ 
+             // 4.5 Radar Nowcast (h = 0, 1, 2)
+-            var pNow: Double? = null
++            val pNow: Double? = radarNowcastProb(radarNowcast, step)
+             var pNowPoint: Double? = null
+-            if (step < 3 && radarNowcast.available) {
+-                if (radarNowcast.wetFractionInTarget >= 0.05 && step == 0) {
+-                    pNow = min(0.95, 0.6 + 4.0 * radarNowcast.wetFractionInTarget)
+-                } else {
+-                    val arr = radarNowcast.firstArrival
+-                    if (arr != null && arr.maxDbz >= Tuning.DBZ_STRONG && arr.etaMinLow != null && arr.etaMinLow <= (step + 1) * 60) {
+-                        pNow = 0.85
+-                    } else if (arr != null && arr.maxDbz >= Tuning.DBZ_RAIN && arr.etaMinLow != null && arr.etaMinLow <= (step + 1) * 60) {
+-                        pNow = 0.65
+-                    } else if (radarNowcast.cells.any { it.state == CellApproachState.WILL_MISS && (it.minDistanceKm != null && it.minDistanceKm <= Tuning.TARGET_RADIUS_KM + 15.0) }) {
+-                        pNow = 0.25
+-                    } else if (radarNowcast.maxDbzInTarget < Tuning.DBZ_LIGHT && radarNowcast.cells.isEmpty()) {
+-                        pNow = 0.03
+-                    }
+-                }
+-            }
+ 
+             if (pNow != null && step < Tuning.NOWCAST_WEIGHT.size && pArea != null) {
+                 val w = Tuning.NOWCAST_WEIGHT[step]
+                 pArea = w * pNow + (1.0 - w) * pArea
+-                pNowPoint = if (step == 0 && radarNowcast.maxDbzNearPoint >= Tuning.DBZ_RAIN) 0.9 else 0.6 * pNow
++                pNowPoint = if (step == 0 && radarNowcast.maxDbzNearPoint >= Tuning.DBZ_RAIN) Tuning.NOWCAST_POINT_RAIN else Tuning.NOWCAST_POINT_FACTOR * pNow
+                 pPointModel = w * pNowPoint + (1.0 - w) * (pPointModel ?: pArea)
+             }
+ 
+             // 4.6 SYNOP Safiabad Override (h = 0)
+             if (step == 0 && Freshness.isSynopFresh(synop, nowEpochSec) && synop != null) {
+                 if (synop.isRainNow || synop.isThunder) {
+-                    pArea = max(pArea ?: 0.0, 0.9)
+-                    pPointModel = max(pPointModel ?: 0.0, 0.8)
++                    pArea = max(pArea ?: 0.0, Tuning.SYNOP_RAIN_P_AREA)
++                    pPointModel = max(pPointModel ?: 0.0, Tuning.SYNOP_RAIN_P_POINT)
+                 } else if (synop.ww != null && synop.ww < 20 && radarNowcast.maxDbzInTarget < Tuning.DBZ_LIGHT) {
+-                    pPointModel = min(pPointModel ?: 1.0, 0.15)
++                    pPointModel = min(pPointModel ?: 1.0, Tuning.SYNOP_DRY_P_POINT_CAP)
+                 }
+             }
+ 
+@@ -442,60 +642,15 @@ object ForecastEngine {
+             val pPoint = if (pPointModel != null && pArea != null) min(pPointModel, pArea) else pPointModel
+ 
+             // 4.10 Amounts P50 & P90
+-            val memberValues = mutableListOf<Double>()
+-            if (ensIcon != null && ensIcon.times.isNotEmpty() && eIdxIcon >= 0) {
+-                for (m in ensIcon.members.indices) {
+-                    val v = ensIcon.members[m].at(eIdxIcon)
+-                    if (v != null) memberValues.add(v)
+-                }
+-            }
+-            if (ensEcmwf != null && ensEcmwf.times.isNotEmpty() && eIdxEcmwf >= 2) {
+-                for (m in ensEcmwf.members.indices) {
+-                    val a = ensEcmwf.members[m].at(eIdxEcmwf)
+-                    val b = ensEcmwf.members[m].at(eIdxEcmwf - 1)
+-                    val c = ensEcmwf.members[m].at(eIdxEcmwf - 2)
+-                    if (a != null && b != null && c != null) {
+-                        memberValues.add((a + b + c) / 3.0)
+-                    }
+-                }
+-            }
+-
+-            val centerPrecipEcmwfRaw = centerDetail?.precip.at(idxCenter)
+-            val hresCenter: Double? = centerPrecipEcmwfRaw?.let { raw ->
+-                if (!Calibration.qmEnabled || !Calibration.appliesTo(currentMonth)) raw
+-                else {
+-                    val W = Calibration.windowHours
+-                    val start = idxCenter - W + 1
+-                    val window = if (start >= 0) (start..idxCenter).map { centerDetail?.precip.at(it) } else null
+-                    if (window == null || window.any { it == null }) raw
+-                    else {
+-                        val aW = window.sumOf { it!! }
+-                        if (aW < 0.1) raw else raw * (Calibration.calibrateAmount(aW) / aW)
+-                    }
+-                }
+-            }
+-            val iconCenter = iconGrid?.precip?.getOrNull(0)?.at(gIdxIcon)
++            val (amtP50Model, amtP90Model) = modelAmountPercentiles(ensIcon, eIdxIcon, ensEcmwf, eIdxEcmwf, centerDetail, idxCenter, iconGrid, gIdxIcon, ecmwfGrid, gIdxEcmwf, currentMonth)
++            var amtP50: Double? = amtP50Model
++            var amtP90: Double? = amtP90Model
+ 
+-            hresCenter?.let(memberValues::add)
+-            iconCenter?.let(memberValues::add)
+-
+-            var amtP50: Double? = if (memberValues.isNotEmpty()) percentile(memberValues, 0.5) else null
+-            var amtP90: Double? = if (memberValues.isNotEmpty()) percentile(memberValues, 0.9) else null
+-
+-            val hresNeighMax = ecmwfGrid?.let { grid ->
+-                if (gIdxEcmwf >= 0) {
+-                    (0 until grid.pointCount).mapNotNull { p -> grid.precip[p].at(gIdxEcmwf) }.maxOrNull()
+-                } else null
+-            }
+-            if (amtP90 != null && hresNeighMax != null) {
+-                amtP90 = max(amtP90!!, hresNeighMax)
+-            }
+-
+-            if (step < 3 && radarNowcast.available && pNow != null && amtP50 != null) {
++            if (pNow != null && amtP50 != null) {
+                 val w = Tuning.NOWCAST_WEIGHT[step]
+                 val arr = radarNowcast.firstArrival
+                 val amountNow: Double = when {
+-                    radarNowcast.wetFractionInTarget >= 0.05 && step == 0 -> radarNowcast.rainRateInTargetMmH
++                    radarNowcast.wetFractionInTarget >= Tuning.NOWCAST_WET_FRAC_MIN && step == 0 -> radarNowcast.rainRateInTargetMmH
+                     arr != null && arr.etaMinLow != null && arr.speedKmh != null && arr.etaMinLow <= (step + 1) * 60 ->
+                         RadarAnalyzer.dbzToRainRate(arr.maxDbz) * min(1.0, 2.0 * arr.radiusKm / max(Tuning.CELL_SPEED_MIN_KMH, arr.speedKmh))
+                     else -> 0.0
+@@ -516,17 +671,7 @@ object ForecastEngine {
+ 
+             // 4.11 Convective Potential Score
+             val moistureInflowFlag = steeringWind?.moistureInflow.at(idxSteering) ?: false
+-            var convScore: Double? = null
+-            if (cape != null) {
+-                var sc = 45.0 * (cape / 1500.0).coerceIn(0.0, 1.0)
+-                if (li != null) sc += 15.0 * ((-li) / 6.0).coerceIn(0.0, 1.0)
+-                if (pEns != null) sc += 25.0 * pEns
+-                if (dewPoint != null) sc += 15.0 * ((dewPoint - 5.0) / 10.0).coerceIn(0.0, 1.0)
+-                if (moistureInflowFlag) sc += 10.0
+-                sc = min(sc, 100.0)
+-                if (cin != null && abs(cin) > 100.0) sc *= 0.6
+-                convScore = r1(sc)
+-            }
++            val convScore: Double? = convectiveScore(cape, cin, li, pEns, dewPoint, moistureInflowFlag)
+ 
+             val cScoreVal = convScore ?: 0.0
+             if (step < 24) {
+@@ -537,15 +682,15 @@ object ForecastEngine {
+                 if ((cape ?: 0.0) > maxCape) maxCape = cape ?: 0.0
+                 if ((windGust ?: 0.0) > maxGust) maxGust = windGust ?: 0.0
+ 
+-                val isConvective = cScoreVal >= 35.0 || (amtP90 ?: 0.0) >= 1.0
++                val isConvective = cScoreVal >= Tuning.CONV_MODERATE || (amtP90 ?: 0.0) >= 1.0
+                 if (isConvective) convectiveCount++
+                 if (isVirga) virgaCount++
+             }
+ 
+             val convLabelStr = when {
+                 convScore == null -> "نامشخص"
+-                cScoreVal >= 60.0 && (pArea ?: 0.0) >= 0.4 -> "احتمال رگبار همرفتی و رعدوبرق ⚡"
+-                cScoreVal >= 35.0 -> "ناپایداری متوسط ☁️"
++                cScoreVal >= Tuning.CONV_HIGH && (pArea ?: 0.0) >= 0.4 -> "احتمال رگبار همرفتی و رعدوبرق ⚡"
++                cScoreVal >= Tuning.CONV_MODERATE -> "ناپایداری متوسط ☁️"
+                 else -> "پایدار ☀️"
+             }
+ 
+@@ -623,87 +768,11 @@ object ForecastEngine {
+         val rangesMap = mutableMapOf<ForecastRange, List<ForecastRow>>()
+         rangesMap[ForecastRange.HOURLY] = rows
+ 
+-        fun buildBlock(count: Int): ForecastRow? {
+-            val subList = rows.take(minOf(count, rows.size))
+-            if (subList.isEmpty()) return null
+-
+-            val startEpoch = subList.first().timeEpochSec - 3600L
+-            val endEpoch = subList.last().timeEpochSec
+-            val bs = blockStats(listOf(ensEcmwf, ensIcon), startEpoch, endEpoch, Tuning.WET_HOUR_MM, Tuning.HEAVY_6H_MM)
+-
+-            val maxHourlyProbArea = subList.mapNotNull { it.probArea?.let { p -> p / 100.0 } }.maxOrNull()
+-            val blockProbAreaFrac = when {
+-                bs.pWet != null && maxHourlyProbArea != null -> max(bs.pWet, maxHourlyProbArea)
+-                bs.pWet != null -> bs.pWet
+-                maxHourlyProbArea != null -> maxHourlyProbArea
+-                else -> null
+-            }
+-
+-            val maxHourlyProbPoint = subList.mapNotNull { it.probPoint?.let { p -> p / 100.0 } }.maxOrNull()
+-
+-            val sumHourlyP50 = subList.mapNotNull { it.amountP50 }.let { if (it.isNotEmpty()) it.sum() else null }
+-
+-            val blockAmountP50 = bs.p50 ?: sumHourlyP50
+-            val blockAmountP90 = if (bs.p90 != null && sumHourlyP50 != null) max(bs.p90, sumHourlyP50) else bs.p90
+-
+-            val tempMapList = subList.mapNotNull { it.tempC }
+-            val minT = tempMapList.minOrNull()
+-            val maxT = tempMapList.maxOrNull()
+-
+-            val gustList = subList.mapNotNull { it.gustKmh }
+-            val maxGustVal = gustList.maxOrNull()
+-
+-            val convList = subList.mapNotNull { it.convScore }
+-            val maxConv = convList.maxOrNull()
+-
+-            val anyVirga = subList.any { it.virgaRisk }
+-            val first = subList.first()
+-            val last = subList.last()
+-
+-            val dirList = subList.mapNotNull { it.windDirFromDeg }
+-            val dominantDir = if (dirList.isNotEmpty()) {
+-                var sumSin = 0.0
+-                var sumCos = 0.0
+-                for (d in dirList) {
+-                    val rad = Math.toRadians(d)
+-                    sumSin += sin(rad)
+-                    sumCos += cos(rad)
+-                }
+-                (Math.toDegrees(atan2(sumSin, sumCos)) + 360.0) % 360.0
+-            } else null
+-
+-            return ForecastRow(
+-                timeEpochSec = first.timeEpochSec,
+-                timeIran = "${first.timeIran.takeLast(5)} تا ${last.timeIran.takeLast(5)}",
+-                forecastSource = first.forecastSource,
+-                probArea = blockProbAreaFrac?.let { r1(it * 100.0) },
+-                probPoint = maxHourlyProbPoint?.let { r1(it * 100.0) },
+-                amountP50 = blockAmountP50?.let { r2(it) },
+-                amountP90 = blockAmountP90?.let { r2(it) },
+-                tempC = maxT,
+-                tempMinC = minT,
+-                tempMaxC = maxT,
+-                dewC = first.dewC,
+-                rh = first.rh,
+-                cloud = first.cloud,
+-                gustKmh = maxGustVal,
+-                windSpeedKmh = first.windSpeedKmh,
+-                windDirFromDeg = dominantDir?.let { r1(it) },
+-                windDirLabel = dominantDir?.let { GeoUtils.dir16Fa(it) },
+-                convScore = maxConv,
+-                convLabel = if (maxConv == null && blockAmountP50 == null) "نامشخص" else if ((maxConv ?: 0.0) >= 35.0 || (blockAmountP90 ?: 0.0) >= 1.0) "پتانسیل رگبار همرفتی ⚡" else if ((blockAmountP50 ?: 0.0) > 0.1) "بارش باران 🌧️" else "بدون بارش قابل‌توجه",
+-                virgaRisk = anyVirga,
+-                confidence = first.confidence,
+-                sources = first.sources,
+-                eventLabel = if (blockAmountP50 == null) "نامشخص" else if (blockAmountP50 > 0.1) "بارش باران 🌧️" else "بدون بارش قابل‌توجه"
+-            )
+-        }
+-
+-        buildBlock(1)?.let { rangesMap[ForecastRange.H1] = listOf(it) }
+-        buildBlock(3)?.let { rangesMap[ForecastRange.H3] = listOf(it) }
+-        buildBlock(6)?.let { rangesMap[ForecastRange.H6] = listOf(it) }
+-        buildBlock(12)?.let { rangesMap[ForecastRange.H12] = listOf(it) }
+-        buildBlock(24)?.let { rangesMap[ForecastRange.H24] = listOf(it) }
++        buildBlock(rows, listOf(ensEcmwf, ensIcon), 1)?.let { rangesMap[ForecastRange.H1] = listOf(it) }
++        buildBlock(rows, listOf(ensEcmwf, ensIcon), 3)?.let { rangesMap[ForecastRange.H3] = listOf(it) }
++        buildBlock(rows, listOf(ensEcmwf, ensIcon), 6)?.let { rangesMap[ForecastRange.H6] = listOf(it) }
++        buildBlock(rows, listOf(ensEcmwf, ensIcon), 12)?.let { rangesMap[ForecastRange.H12] = listOf(it) }
++        buildBlock(rows, listOf(ensEcmwf, ensIcon), 24)?.let { rangesMap[ForecastRange.H24] = listOf(it) }
+ 
+         val h24 = rangesMap[ForecastRange.H24]?.firstOrNull()
+ 
+@@ -724,7 +793,7 @@ object ForecastEngine {
+                 alertVerdict.tier == AlertTier.RED || alertVerdict.tier == AlertTier.ORANGE -> "جمع‌بندی: ${alertVerdict.text}"
+                 radarNowcast.available && radarNowcast.maxDbzInTarget >= Tuning.DBZ_RAIN -> "رادار بارش فعال را داخل شعاع ۲۰ کیلومتر نشان می‌دهد."
+                 (h24?.amountP50 ?: 0.0) >= 3.0 -> "بارش باران به حجم کلی حدود ${JalaliCalendar.formatNumber(h24?.amountP50 ?: 0.0)} میلی‌متر پیش‌بینی می‌شود."
+-                peakSci >= 35.0 -> "پتانسیل رگبار موضعی همرفتی و صاعقه در ساعات اوج ناپایداری."
++                peakSci >= Tuning.CONV_MODERATE -> "پتانسیل رگبار موضعی همرفتی و صاعقه در ساعات اوج ناپایداری."
+                 virgaCount >= 2 -> "خشکی لایه‌های زیرین جو؛ احتمال تبخیر باران در هوا (ویرگا) و وزش تندباد محلی."
+                 else -> "مدل‌ها برای ۲۴ ساعت آینده بارش قابل‌توجهی پیش‌بینی نمی‌کنند."
+             },
+@@ -736,29 +805,15 @@ object ForecastEngine {
+ 
+         val verificationStats = if (context != null) VerificationStore.computeStats(context) else null
+ 
+-        var wetPointsCount = 0
+-        var totalValidPoints = 0
+-        ecmwfGrid?.let { grid ->
+-            if (grid.pointCount > 0 && grid.times.isNotEmpty()) {
+-                val gIdx = grid.times.indexOfFirst { abs(it - nowEpochSec) < 1800L }
+-                if (gIdx >= 0) {
+-                    for (p in 0 until grid.pointCount) {
+-                        val pr = grid.precip[p].getOrNull(gIdx) ?: continue
+-                        if (!pr.isNaN()) {
+-                            totalValidPoints++
+-                            if (pr >= Tuning.WET_HOUR_MM) wetPointsCount++
+-                        }
+-                    }
+-                }
+-            }
+-        }
++        val wetPointsCount = wetCountNow?.first ?: 0
++        val totalValidPoints = wetCountNow?.second ?: 0
+         val nSummary = NeighbourhoodSummary(
+             pointsWithRainNow = wetPointsCount,
+             totalPoints = totalValidPoints,   // ۰ یعنی دادهٔ ECMWF نرسیده؛ UI باید «نامشخص» نشان دهد
+             wettestDirectionFa = radarNowcast.firstArrival?.directionFa
+         )
+ 
+-        ForecastDashboard(
++        return ForecastDashboard(
+             location = "شعاع ۲۰ کیلومتری شمس‌آباد دزفول",
+             lat = RegionConfig.CENTER.lat,
+             lon = RegionConfig.CENTER.lon,
+@@ -792,7 +847,7 @@ object ForecastEngine {
+         val userRainNow = Freshness.isUserRainNow(userObservation, nowSec)
+         if ((synopRainNow || userRainNow) && radar.maxDbzInTarget < Tuning.DBZ_LIGHT) {
+             return radar.copy(
+-                available = false,
++                available = false, cells = emptyList(), firstArrival = null,
+                 statusText = "رادار با مشاهدهٔ زمینی تناقض دارد (روی زمین باران گزارش شده ولی رادار اکویی نمی‌بیند)؛ در این نوبت از رادار استفاده نشد."
+             )
+         }
+@@ -800,7 +855,7 @@ object ForecastEngine {
+         if (radarSeesNothing && modelWetFracNow != null && modelWetFracNow >= Tuning.RADAR_BLIND_MODEL_WET_FRAC) {
+             val pct = (modelWetFracNow * 100).roundToInt()
+             return radar.copy(
+-                available = false,
++                available = false, cells = emptyList(), firstArrival = null,
+                 statusText = "رادار هیچ بارشی نمی‌بیند در حالی که مدل‌ها همین الان در $pct٪ نقاط اطراف باران دارند؛ احتمالاً رادار این منطقه را نمی‌بیند. در این نوبت از رادار استفاده نشد."
+             )
+         }
+@@ -886,8 +941,8 @@ object ForecastEngine {
+         val isYellowRadarLight = radarOk && radar.maxDbzInTarget >= Tuning.DBZ_RAIN
+         val isYellowProb = p12hWet >= Tuning.YELLOW_PROB_WET_12H
+         val isYellowMoistProb = moistureInflowNext12h && p12hWet >= Tuning.YELLOW_MOIST_MIN_PROB
+-        val isYellowConv = rows.take(12).any { (it.convScore ?: 0.0) >= 60.0 }
+-        val isYellowMiss = radarOk && radar.cells.any { it.state == CellApproachState.WILL_MISS && (it.minDistanceKm != null && it.minDistanceKm <= Tuning.TARGET_RADIUS_KM + 15.0) }
++        val isYellowConv = rows.take(12).any { (it.convScore ?: 0.0) >= Tuning.CONV_HIGH }
++        val isYellowMiss = radarOk && radar.cells.any { isNearMiss(it) }
+         val isYellowUpwindEcho = radarOk && radar.cells.any {
+             it.state == CellApproachState.APPROACHING && it.maxDbz >= Tuning.DBZ_STRONG
+         }
+diff --git a/app/src/main/java/com/amin/weather/core/RadarAnalyzer.kt b/app/src/main/java/com/amin/weather/core/RadarAnalyzer.kt
+index 383e792..2c2efb7 100644
+--- a/app/src/main/java/com/amin/weather/core/RadarAnalyzer.kt
++++ b/app/src/main/java/com/amin/weather/core/RadarAnalyzer.kt
+@@ -41,7 +41,6 @@ data class RadarNowcastResult(
+     val firstArrival: RadarCellInfo? = null,
+     val statusText: String = "",
+     val maxDbzNearPoint: Int = -1,
+-    val upwindStrongEcho: Boolean = false,
+     val coverageVerified: Boolean = true,
+     val clutterPixelsRemoved: Int = 0
+ )
+@@ -260,7 +259,6 @@ object RadarAnalyzer {
+         var wetPixelCountTarget = 0
+         var totalPixelCountTarget = 0
+         var sumRainRateTarget = 0.0
+-        var upwindStrongEcho = false
+ 
+         for (idx in 0 until (512 * 512)) {
+             val dist = precomputedDistKm[idx]
+@@ -278,14 +276,6 @@ object RadarAnalyzer {
+             if (dist <= Tuning.POINT_RADIUS_KM && dbz >= Tuning.DBZ_RAIN) {
+                 if (dbz > maxDbzNearPoint) maxDbzNearPoint = dbz
+             }
+-
+-            if (dbz >= Tuning.DBZ_STRONG) {
+-                val bearing = precomputedBearingDeg[idx]
+-                if (dist in Tuning.UPWIND_RING_MIN_KM..Tuning.RADAR_WATCH_RADIUS_KM &&
+-                    bearing in Tuning.UPWIND_BEARING_MIN..Tuning.UPWIND_BEARING_MAX) {
+-                    upwindStrongEcho = true
+-                }
+-            }
+         }
+ 
+         val wetFractionTarget = if (totalPixelCountTarget > 0) wetPixelCountTarget.toDouble() / totalPixelCountTarget else 0.0
+@@ -432,7 +422,6 @@ object RadarAnalyzer {
+             firstArrival = firstArrival,
+             statusText = statusText,
+             maxDbzNearPoint = maxDbzNearPoint,
+-            upwindStrongEcho = upwindStrongEcho,
+             coverageVerified = fetch.coverageVerified,
+             clutterPixelsRemoved = clutterPixelsRemoved
+         )
+diff --git a/app/src/main/java/com/amin/weather/core/Tuning.kt b/app/src/main/java/com/amin/weather/core/Tuning.kt
+index 115b050..7a5c5b7 100644
+--- a/app/src/main/java/com/amin/weather/core/Tuning.kt
++++ b/app/src/main/java/com/amin/weather/core/Tuning.kt
+@@ -8,13 +8,11 @@ object Tuning {
+     // آستانه‌های بارش (mm)
+     const val WET_HOUR_MM = 0.2          // ساعت بارانی
+     const val WET_3H_MM = 0.3            // پنجره‌ی ۳ ساعته‌ی بارانی (برای ensemble ECMWF)
+-    const val MODERATE_3H_MM = 2.0
+     const val HEAVY_6H_MM = 10.0
+ 
+     // رادار (dBZ)
+     const val DBZ_LIGHT = 15
+     const val DBZ_RAIN = 20
+-    const val DBZ_MODERATE = 30
+     const val DBZ_STRONG = 35
+     const val DBZ_SEVERE = 45
+     const val DBZ_CAP_FOR_RAINRATE = 53  // جلوگیری از تخمین بیش از حد به دلیل تگرگ
+@@ -34,20 +32,38 @@ object Tuning {
+     const val TRACK_FRAME_GAP_MIN_MIN = 5
+     const val TRACK_FRAME_GAP_MAX_MIN = 20
+     const val POINT_RADIUS_KM = 3.0              // «نقطهٔ» شمس‌آباد برای nowcast
+-    const val UPWIND_RING_MIN_KM = 50.0
+-    const val UPWIND_BEARING_MIN = 202.5         // جنوب‌غرب
+-    const val UPWIND_BEARING_MAX = 337.5         // شمال‌غرب
+     const val NEIGH_MIN_VALID_POINTS = 12        // حداقل نقطهٔ معتبر از ۱۷ نقطه
+     const val SYNOP_FRESH_SEC = 5400L            // ۹۰ دقیقه
+     const val FUTURE_TOLERANCE_SEC = 600L        // گزارشی که بیش از ۱۰ دقیقه «در آینده» باشد نامعتبر است (ساعت گوشی یا داده خراب)
+     const val RADAR_BLIND_MODEL_WET_FRAC = 0.7   // اگر این سهم از نقاط ECMWF همین الان خیس باشد و رادار هیچ اکویی نبیند، رادار «کور» است
+     const val STALE_CACHE_MIN = 30               // دادهٔ ذخیره‌شده قدیمی‌تر از این «کهنه» نمایش داده می‌شود
+-    const val SYNOP_DISPLAY_FRESH_MIN = 90   // گزارش صفی‌آباد قدیمی‌تر از این، «هوای حاضر» حساب نمی‌شود (هم‌اندازهٔ SYNOP_FRESH_SEC)
+     val VERIFY_WINDOWS_H = setOf(6, 12)
+     const val VERIFY_MAX_LINES = 5000
+     const val YELLOW_MOIST_MIN_PROB = 0.20
+ 
+-    // وزن ترکیب nowcast رادار با مدل برای ساعت ۱، ۲، ۳
++    // احتمال بارش از رادار (nowcast) برای ساعت‌های ۰ تا ۲
++    const val NOWCAST_WET_FRAC_MIN = 0.05        // از این سهم پوشش دایره به بالا: «بارش فعال در دایره»
++    const val NOWCAST_P_WET_BASE = 0.6
++    const val NOWCAST_P_WET_SLOPE = 4.0
++    const val NOWCAST_P_MAX = 0.95
++    const val NOWCAST_P_ARRIVAL_STRONG = 0.85    // سلول قوی که در همین ساعت می‌رسد
++    const val NOWCAST_P_ARRIVAL = 0.65           // سلول بارانی که در همین ساعت می‌رسد
++    const val NOWCAST_P_NEAR_MISS = 0.25         // سلولی که از کنار دایره رد می‌شود
++    const val NOWCAST_P_CLEAR = 0.03             // رادار سالم و کاملاً خالی
++    const val NOWCAST_POINT_RAIN = 0.9           // اکوی باران روی خود شمس‌آباد
++    const val NOWCAST_POINT_FACTOR = 0.6
++    const val NEAR_MISS_MARGIN_KM = 15.0
++
++    // آستانه‌های شاخص همرفتی (۰ تا ۱۰۰)
++    const val CONV_MODERATE = 35.0
++    const val CONV_HIGH = 60.0
++
++    // دیدبانی صفی‌آباد در ساعت صفر
++    const val SYNOP_RAIN_P_AREA = 0.9
++    const val SYNOP_RAIN_P_POINT = 0.8
++    const val SYNOP_DRY_P_POINT_CAP = 0.15
++
++    // وزن ترکیب nowcast رادار با مدل برای ساعت‌های ۰، ۱، ۲ (اندیس آرایه = step)
+     val NOWCAST_WEIGHT = doubleArrayOf(0.70, 0.40, 0.15)
+ 
+     // وزن ترکیب منابع مدل در احتمال محدوده
+@@ -86,7 +102,6 @@ object Tuning {
+     const val CALIBRATION_ASSET = "calibration_40794.json"
+     const val CALIB_QM_MAX_RATIO = 2.0   // سقف ضریب تصحیح مقدار در بالاتر از آخرین چندک
+     const val CALIB_QM_MIN_RATIO = 0.5
+-    const val ONDEVICE_MIN_WET_EVENTS = 30
+ 
+     // فراخوانی منابع
+     const val REFRESH_INTERVAL_MIN = 30
+diff --git a/app/src/main/java/com/amin/weather/core/VerificationStore.kt b/app/src/main/java/com/amin/weather/core/VerificationStore.kt
+index c118b4e..0ec7081 100644
+--- a/app/src/main/java/com/amin/weather/core/VerificationStore.kt
++++ b/app/src/main/java/com/amin/weather/core/VerificationStore.kt
+@@ -29,6 +29,7 @@ data class VerificationStats(
+ object VerificationStore {
+     private const val FILE_NAME = "verify.jsonl"
+ 
++    @Synchronized
+     fun recordStandardWindows(
+         context: Context,
+         nowEpochSec: Long,
+@@ -100,10 +101,8 @@ object VerificationStore {
+         } catch (_: Exception) {}
+     }
+ 
+-    fun recordForecast(context: Context, targetEpochSec: Long, probPoint: Double?, amountP50: Double?) {
+-        // Kept for backward compatibility
+-    }
+ 
++    @Synchronized
+     fun evaluateWithSynop(context: Context, synop: SynopObs) {
+         if (synop.precipMm == null || synop.precipPeriodH !in Tuning.VERIFY_WINDOWS_H) return
+         try {
+@@ -132,6 +131,7 @@ object VerificationStore {
+         } catch (_: Exception) {}
+     }
+ 
++    @Synchronized
+     fun computeStats(context: Context): VerificationStats {
+         val calEnabled = Calibration.enabled
+         val calStatus = if (calEnabled) "جدول کالیبراسیون فعال است" else "جدول کالیبراسیون غیرفعال است (عدم انطباق شرایط دامنه‌ای)"
+diff --git a/app/src/main/java/com/amin/weather/core/WeatherRepository.kt b/app/src/main/java/com/amin/weather/core/WeatherRepository.kt
+index 555bd52..abb0258 100644
+--- a/app/src/main/java/com/amin/weather/core/WeatherRepository.kt
++++ b/app/src/main/java/com/amin/weather/core/WeatherRepository.kt
+@@ -11,6 +11,10 @@ import java.io.File
+ import java.io.FileOutputStream
+ 
+ class WeatherRepository(private val context: Context) {
++    private companion object {
++        val CACHE_LOCK = Any()
++    }
++
+ 
+     private val cacheFile: File
+         get() = File(context.filesDir, "forecast_cache_v5.json")
+@@ -67,7 +71,12 @@ class WeatherRepository(private val context: Context) {
+                     val json = serializeDashboard(dashboard)
+                     json.put("schema", 5)
+                     json.put("cachedAtMs", System.currentTimeMillis())
+-                    cacheFile.writeText(json.toString())
++                    // Worker و صفحه ممکن است هم‌زمان بنویسند: یکی‌یکی، و اول در فایل موقت
++                    synchronized(CACHE_LOCK) {
++                        val tmp = File(cacheFile.parentFile, cacheFile.name + ".tmp")
++                        tmp.writeText(json.toString())
++                        if (!tmp.renameTo(cacheFile)) { cacheFile.writeText(json.toString()); tmp.delete() }
++                    }
+                 } catch (_: Exception) {}
+             }
+             // هیچ مدلی نرسید و مشاهدهٔ زنده هم چیزی نگفت ← دادهٔ ذخیره‌شده (با برچسب کهنه) مفیدتر است
+diff --git a/app/src/main/java/com/amin/weather/ui/WeatherDashboardScreen.kt b/app/src/main/java/com/amin/weather/ui/WeatherDashboardScreen.kt
+index 3a46787..452ecf1 100644
+--- a/app/src/main/java/com/amin/weather/ui/WeatherDashboardScreen.kt
++++ b/app/src/main/java/com/amin/weather/ui/WeatherDashboardScreen.kt
+@@ -1272,7 +1272,7 @@ private fun SynopObsCard(synop: SynopObs?, modelCurrent: ModelCurrent?) {
+             if (synop != null) {
+                 val nowSec = System.currentTimeMillis() / 1000L
+                 val ageMin = ((nowSec - synop.timeUtcEpochSec) / 60L).toInt()
+-                val isFresh = ageMin <= Tuning.SYNOP_DISPLAY_FRESH_MIN
++                val isFresh = Freshness.isSynopFresh(synop, nowSec)
+                 val obsTimeIran = ForecastEngine.epochToIran(synop.timeUtcEpochSec)
+ 
+                 Text(
+diff --git a/app/src/test/java/com/amin/weather/ForecastEngineTest.kt b/app/src/test/java/com/amin/weather/ForecastEngineTest.kt
+index 78d841d..1f53ffe 100644
+--- a/app/src/test/java/com/amin/weather/ForecastEngineTest.kt
++++ b/app/src/test/java/com/amin/weather/ForecastEngineTest.kt
+@@ -252,7 +252,7 @@ class ForecastEngineTest {
+         val radarNotApproaching = RadarNowcastResult(
+             available = true, frameAgeMin = 5, coverageOk = true,
+             maxDbzInTarget = 0, wetFractionInTarget = 0.0, rainRateInTargetMmH = 0.0,
+-            cells = listOf(cellNotApproaching), upwindStrongEcho = true
++            cells = listOf(cellNotApproaching)
+         )
+         val verdictNotApproaching = ForecastEngine.decideTier(
+             radar = radarNotApproaching, synop = null, rows = listOf(dummyRow)
+diff --git a/app/src/test/java/com/amin/weather/GoldenComputeTest.kt b/app/src/test/java/com/amin/weather/GoldenComputeTest.kt
+new file mode 100644
+index 0000000..340e7bc
+--- /dev/null
++++ b/app/src/test/java/com/amin/weather/GoldenComputeTest.kt
+@@ -0,0 +1,157 @@
++package com.amin.weather
++
++import com.amin.weather.core.*
++import org.junit.Assert.assertEquals
++import org.junit.Test
++import java.io.File
++import kotlin.math.abs
++import kotlin.math.max
++import kotlin.math.sin
++
++/**
++ * «تست طلایی» موتور: ورودی‌های ساختگیِ ثابت ← computeDashboard ← متن خروجی.
++ * خروجی باید دقیقاً با فایل ثبت‌شده یکی باشد. هدف: هنگام بازآرایی کد، رفتار بی‌صدا عوض نشود.
++ * اگر تغییری در رفتار عمدی است، فایل طلایی باید آگاهانه به‌روز شود (با -Dgolden.write=true).
++ */
++class GoldenComputeTest {
++
++    private val now = 1_794_085_200L          // 2026-11-07 21:00 UTC (ماه نوامبر: کالیبراسیون فعال)
++    private val start = now - 24 * 3600L
++    private val hours = 96
++    private val times = LongArray(hours) { start + it * 3600L }
++
++    /** عدد شبه‌تصادفی قطعی */
++    private fun noise(a: Int, b: Int): Double {
++        val x = sin(a * 12.9898 + b * 78.233) * 43758.5453
++        return x - kotlin.math.floor(x)
++    }
++
++    /** شدت بارش «سامانه» در ساعت h نسبت به now؛ قله حدود ۳ ساعت بعد */
++    private fun system(hFromNow: Int, wet: Boolean): Double {
++        if (!wet) return 0.0
++        val d = (hFromNow - 3).toDouble()
++        return max(0.0, 2.5 - 0.25 * d * d)
++    }
++
++    private fun inputs(wet: Boolean, radarFetch: RadarFetch?, synop: SynopObs?): ForecastEngine.EngineInputs {
++        val hIdx = { i: Int -> ((times[i] - now) / 3600L).toInt() }
++        val ecmwf = ModelGrid(
++            times,
++            Array(17) { p -> DoubleArray(hours) { i -> max(0.0, system(hIdx(i), wet) * (0.6 + 0.8 * noise(p, i)) - 0.1) } },
++            null, null, null
++        )
++        val icon = ModelGrid(
++            times,
++            Array(17) { p -> DoubleArray(hours) { i -> max(0.0, system(hIdx(i) - 1, wet) * (0.5 + noise(p + 31, i)) - 0.1) } },
++            null, null, null
++        )
++        val center = CenterDetail(
++            times = times,
++            temp = DoubleArray(hours) { 18.0 + 4 * sin(it / 24.0 * 6.28) },
++            dewPoint = DoubleArray(hours) { 12.0 + (if (wet) 4.0 else 0.0) },
++            rh = DoubleArray(hours) { if (wet) 85.0 else 45.0 },
++            precip = DoubleArray(hours) { i -> system(hIdx(i), wet) },
++            rain = null, showers = null, weatherCode = null,
++            cape = DoubleArray(hours) { i -> if (wet) 300.0 + 400 * noise(5, i) else 20.0 },
++            cin = DoubleArray(hours) { -20.0 },
++            li = null,
++            cloud = DoubleArray(hours) { if (wet) 90.0 else 10.0 },
++            cloudLow = null, cloudMid = null,
++            windSpeed = DoubleArray(hours) { 15.0 },
++            windDir = DoubleArray(hours) { 240.0 },
++            windGust = DoubleArray(hours) { i -> 25.0 + 20 * noise(9, i) },
++            modelCurrent = null
++        )
++        val ensE = EnsembleSet(times, Array(51) { m -> DoubleArray(hours) { i -> max(0.0, system(hIdx(i), wet) * noise(m, i) * 1.6 - 0.2) } })
++        val ensI = EnsembleSet(times, Array(40) { m -> DoubleArray(hours) { i -> max(0.0, system(hIdx(i) - 1, wet) * noise(m + 100, i) * 1.4 - 0.2) } })
++        val steering = SteeringWind(times, DoubleArray(hours) { 40.0 }, DoubleArray(hours) { 60.0 }, BooleanArray(hours) { wet })
++        val li = Pair(times, DoubleArray(hours) { if (wet) -2.0 else 3.0 })
++        return ForecastEngine.EngineInputs(
++            SourceResult("n", SourceStatus.OK, mapOf("ecmwf" to ecmwf, "icon" to icon)),
++            SourceResult("c", SourceStatus.OK, center),
++            SourceResult("l", SourceStatus.OK, li),
++            SourceResult("s", SourceStatus.OK, steering),
++            SourceResult("e", SourceStatus.OK, ensE),
++            SourceResult("i", SourceStatus.OK, ensI),
++            SourceResult("y", if (synop != null) SourceStatus.OK else SourceStatus.FAILED, synop),
++            SourceResult("r", if (radarFetch != null) SourceStatus.OK else SourceStatus.FAILED, radarFetch)
++        )
++    }
++
++    private fun blob(cxKm: Double, cyKm: Double, r: Double, dbz: Int): IntArray {
++        val g = IntArray(512 * 512) { -1 }
++        val tx = GeoUtils.lonToTileX(RegionConfig.CENTER.lon, 7)
++        val ty = GeoUtils.latToTileY(RegionConfig.CENTER.lat, 7)
++        val minX = kotlin.math.floor(tx).toInt() - 1
++        val minY = kotlin.math.floor(ty).toInt()
++        for (py in 0 until 512) {
++            val lat = GeoUtils.tileYToLat(minY + (py + 0.5) / 256.0, 7)
++            for (px in 0 until 512) {
++                val lon = GeoUtils.tileXToLon(minX + (px + 0.5) / 256.0, 7)
++                val (x, y) = GeoUtils.toLocalKm(RegionConfig.CENTER.lat, RegionConfig.CENTER.lon, lat, lon)
++                if (kotlin.math.hypot(x - cxKm, y - cyKm) <= r) g[py * 512 + px] = dbz
++            }
++        }
++        return g
++    }
++
++    private fun f(v: Double?) = v?.let { String.format(java.util.Locale.US, "%.3f", it) } ?: "null"
++
++    private fun render(d: ForecastDashboard): String = buildString {
++        appendLine("verdict=${d.verdict.tier} | ${d.verdict.text} | ${d.verdict.advisoryNote}")
++        appendLine("radar=${d.radarNowcast.available} max=${d.radarNowcast.maxDbzInTarget} wet=${f(d.radarNowcast.wetFractionInTarget)} cells=${d.radarNowcast.cells.size} first=${d.radarNowcast.firstArrival?.let { "${it.etaMinLow}-${it.etaMinHigh}" }} | ${d.radarNowcast.statusText}")
++        appendLine("neigh=${d.neighbourhood.pointsWithRainNow}/${d.neighbourhood.totalPoints} models=${d.modelsAvailable}")
++        val p = d.pattern
++        appendLine("pattern=${p.windowStartIran}..${p.windowEndIran} peak=${p.peakPrecipTimeIran}/${f(p.peakPrecipMm)} ts=${p.peakTsTimeIran}/${f(p.peakConvectiveScore)} cape=${f(p.maxCape)} tot=${f(p.totalPrecip24hLikely)}/${f(p.totalPrecip24hMax)} maxP=${f(p.maxProb24h)} gust=${f(p.maxGust24h)} conv=${p.convectiveHoursCount} virga=${p.virgaHoursCount} | ${p.precipSummaryText}")
++        for ((k, rows) in d.ranges.toSortedMap(compareBy { it.ordinal })) {
++            for (r in rows) {
++                appendLine("$k ${r.timeIran} src=${r.forecastSource} pA=${f(r.probArea)} pP=${f(r.probPoint)} a50=${f(r.amountP50)} a90=${f(r.amountP90)} t=${f(r.tempC)} ${f(r.tempMinC)}/${f(r.tempMaxC)} td=${f(r.dewC)} rh=${f(r.rh)} cl=${f(r.cloud)} g=${f(r.gustKmh)} ws=${f(r.windSpeedKmh)} wd=${f(r.windDirFromDeg)} ${r.windDirLabel} cs=${f(r.convScore)} ${r.convLabel} v=${r.virgaRisk} conf=${r.confidence} [${r.sources.joinToString(",")}] ${r.eventLabel}")
++            }
++        }
++    }
++
++    private fun scenarios(): String {
++        // کالیبراسیون واقعی پروژه، تا مسیر کالیبره هم پوشش داده شود
++        val calFile = listOf("src/main/assets/calibration_40794.json", "app/src/main/assets/calibration_40794.json")
++            .map { File(it) }.firstOrNull { it.exists() }
++        if (calFile != null) Calibration.loadFromJson(calFile.readText())
++
++        val sb = StringBuilder()
++        val wetSynop = SynopObs(now - 1200, 17.0, 15.5, 90.0, null, null, 61, true, false, false, 1)
++        val drySynop = SynopObs(now - 1200, 20.0, 8.0, 45.0, 0.0, 6, 2, false, false, false, 1)
++        val cellFetch = RadarFetch(listOf(
++            RadarFrame(now - 900, blob(-40.0, -20.0, 6.0, 38)),
++            RadarFrame(now - 300, blob(-35.0, -17.5, 6.0, 38))
++        ), lastFrameAgeMin = 5, coverageVerified = true)
++        val emptyFetch = RadarFetch(listOf(RadarFrame(now - 300, IntArray(512 * 512) { -1 })), 5, true)
++        val rainOverhead = RadarFetch(listOf(RadarFrame(now - 300, blob(2.0, 1.0, 8.0, 28))), 5, true)
++
++        val cases = listOf(
++            Triple("A wet+cell+synopRain", inputs(true, cellFetch, wetSynop), null),
++            Triple("B dry+emptyRadar+synopDry", inputs(false, emptyFetch, drySynop), null),
++            Triple("C wet+emptyRadar(blind)+noSynop", inputs(true, emptyFetch, null), null),
++            Triple("D wet+rainOverhead+userRain", inputs(true, rainOverhead, null),
++                SkyObservationReport(phenomenon = "باران", createdAtEpochMs = (now - 600) * 1000L)),
++            Triple("E dry+noRadar+noSynop", inputs(false, null, null), null)
++        )
++        for ((name, inp, user) in cases) {
++            sb.appendLine("=== $name")
++            sb.append(render(ForecastEngine.computeDashboard(inp, user, now, null)))
++        }
++        return sb.toString()
++    }
++
++    @Test
++    fun computeDashboard_matchesGolden() {
++        val actual = scenarios()
++        val goldenRel = "golden/compute_dashboard.txt"
++        val res = javaClass.classLoader?.getResource(goldenRel)
++        if (System.getProperty("golden.write") == "true" || res == null) {
++            val out = File(System.getProperty("golden.dir", "src/test/resources") + "/" + goldenRel)
++            out.parentFile.mkdirs(); out.writeText(actual)
++            if (res == null) throw AssertionError("فایل طلایی وجود نداشت و ساخته شد: ${out.absolutePath}")
++            return
++        }
++        assertEquals(res.readText(), actual)
++    }
++}
+diff --git a/app/src/test/resources/golden/compute_dashboard.txt b/app/src/test/resources/golden/compute_dashboard.txt
+new file mode 100644
+index 0000000..ac34a60
+--- /dev/null
++++ b/app/src/test/resources/golden/compute_dashboard.txt
+@@ -0,0 +1,290 @@
++=== A wet+cell+synopRain
++verdict=ORANGE | هشدار نارنجی: ثبت بارش فعال در ایستگاه دیدبانی صفی‌آباد. | احتمال وقوع رگبار ناگهانی و تندباد موضعی وجود دارد.
++radar=false max=-1 wet=0.000 cells=0 first=null | رادار با مشاهدهٔ زمینی تناقض دارد (روی زمین باران گزارش شده ولی رادار اکویی نمی‌بیند)؛ در این نوبت از رادار استفاده نشد.
++neigh=5/17 models=true
++pattern=2026-11-08 00:30..2026-11-09 23:30 peak=2026-11-08 04:30/1.740 ts=2026-11-08 03:30/72.300 cape=699.500 tot=6.930/9.120 maxP=90.000 gust=44.000 conv=24 virga=0 | جمع‌بندی: هشدار نارنجی: ثبت بارش فعال در ایستگاه دیدبانی صفی‌آباد.
++HOURLY 2026-11-08 00:30 src=🇪🇺 مدل اروپایی ECMWF pA=90.000 pP=80.000 a50=0.000 a90=0.250 t=18.000 18.000/18.000 td=16.000 rh=85.000 cl=90.000 g=27.100 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=40.700 ناپایداری متوسط ☁️ v=false conf=41 [ECMWF IFS,DWD ICON,دیدبانی صفی‌آباد (SYNOP)] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-08 01:30 src=🇪🇺 مدل اروپایی ECMWF pA=48.000 pP=48.000 a50=0.130 a90=1.820 t=19.000 19.000/19.000 td=16.000 rh=85.000 cl=90.000 g=39.800 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=54.000 ناپایداری متوسط ☁️ v=false conf=0 [ECMWF IFS,DWD ICON] رگبار همرفتی و صاعقه ⚡
++HOURLY 2026-11-08 02:30 src=🇪🇺 مدل اروپایی ECMWF pA=84.700 pP=84.700 a50=0.850 a90=3.040 t=20.000 20.000/20.000 td=16.000 rh=85.000 cl=90.000 g=40.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=62.700 احتمال رگبار همرفتی و رعدوبرق ⚡ v=false conf=82 [ECMWF IFS,DWD ICON] رگبار همرفتی و صاعقه ⚡
++HOURLY 2026-11-08 03:30 src=🇪🇺 مدل اروپایی ECMWF pA=88.000 pP=88.000 a50=1.600 a90=3.270 t=20.800 20.800/20.800 td=16.000 rh=85.000 cl=90.000 g=34.700 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=72.300 احتمال رگبار همرفتی و رعدوبرق ⚡ v=false conf=96 [ECMWF IFS,DWD ICON] رگبار همرفتی و صاعقه ⚡
++HOURLY 2026-11-08 04:30 src=🇪🇺 مدل اروپایی ECMWF pA=84.700 pP=84.700 a50=1.740 a90=2.970 t=21.500 21.500/21.500 td=16.000 rh=85.000 cl=90.000 g=36.800 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=64.700 احتمال رگبار همرفتی و رعدوبرق ⚡ v=false conf=82 [ECMWF IFS,DWD ICON] رگبار همرفتی و صاعقه ⚡
++HOURLY 2026-11-08 05:30 src=🇪🇺 مدل اروپایی ECMWF pA=86.400 pP=86.400 a50=1.450 a90=2.270 t=21.900 21.900/21.900 td=16.000 rh=85.000 cl=90.000 g=26.100 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=72.300 احتمال رگبار همرفتی و رعدوبرق ⚡ v=false conf=89 [ECMWF IFS,DWD ICON] رگبار همرفتی و صاعقه ⚡
++HOURLY 2026-11-08 06:30 src=🇪🇺 مدل اروپایی ECMWF pA=67.900 pP=67.900 a50=0.840 a90=1.500 t=22.000 22.000/22.000 td=16.000 rh=85.000 cl=90.000 g=32.900 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=61.800 احتمال رگبار همرفتی و رعدوبرق ⚡ v=false conf=0 [ECMWF IFS,DWD ICON] رگبار همرفتی و صاعقه ⚡
++HOURLY 2026-11-08 07:30 src=🇪🇺 مدل اروپایی ECMWF pA=27.300 pP=25.700 a50=0.110 a90=0.570 t=21.900 21.900/21.900 td=16.000 rh=85.000 cl=90.000 g=44.000 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=54.600 ناپایداری متوسط ☁️ v=false conf=14 [ECMWF IFS,DWD ICON] رگبار همرفتی و صاعقه ⚡
++HOURLY 2026-11-08 08:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.030 t=21.500 21.500/21.500 td=16.000 rh=85.000 cl=90.000 g=35.600 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=47.000 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-08 09:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=20.800 20.800/20.800 td=16.000 rh=85.000 cl=90.000 g=34.200 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=50.400 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار همرفتی و صاعقه ⚡
++HOURLY 2026-11-08 10:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=20.000 20.000/20.000 td=16.000 rh=85.000 cl=90.000 g=40.500 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=41.800 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-08 11:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=19.100 19.100/19.100 td=16.000 rh=85.000 cl=90.000 g=42.100 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=45.100 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-08 12:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=18.000 18.000/18.000 td=16.000 rh=85.000 cl=90.000 g=26.700 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=40.900 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-08 13:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=17.000 17.000/17.000 td=16.000 rh=85.000 cl=90.000 g=31.500 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=41.100 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-08 14:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=16.000 16.000/16.000 td=16.000 rh=85.000 cl=90.000 g=28.900 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=42.000 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-08 15:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=15.200 15.200/15.200 td=16.000 rh=85.000 cl=90.000 g=30.900 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=48.800 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-08 16:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.500 14.500/14.500 td=16.000 rh=85.000 cl=90.000 g=35.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=51.000 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار همرفتی و صاعقه ⚡
++HOURLY 2026-11-08 17:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.100 14.100/14.100 td=16.000 rh=85.000 cl=90.000 g=36.900 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=50.300 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار همرفتی و صاعقه ⚡
++HOURLY 2026-11-08 18:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.000 14.000/14.000 td=16.000 rh=85.000 cl=90.000 g=40.200 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=45.200 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-08 19:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.100 14.100/14.100 td=16.000 rh=85.000 cl=90.000 g=43.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=47.900 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-08 20:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.500 14.500/14.500 td=16.000 rh=85.000 cl=90.000 g=29.200 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=40.600 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-08 21:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=15.200 15.200/15.200 td=16.000 rh=85.000 cl=90.000 g=29.800 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=44.700 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-08 22:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=16.000 16.000/16.000 td=16.000 rh=85.000 cl=90.000 g=25.900 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=42.100 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-08 23:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=16.900 16.900/16.900 td=16.000 rh=85.000 cl=90.000 g=30.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=43.800 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-09 00:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=18.000 18.000/18.000 td=16.000 rh=85.000 cl=90.000 g=28.800 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=48.800 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-09 01:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=19.000 19.000/19.000 td=16.000 rh=85.000 cl=90.000 g=36.600 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=45.800 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-09 02:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=20.000 20.000/20.000 td=16.000 rh=85.000 cl=90.000 g=44.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=43.200 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-09 03:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=20.800 20.800/20.800 td=16.000 rh=85.000 cl=90.000 g=39.900 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=46.400 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-09 04:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=21.500 21.500/21.500 td=16.000 rh=85.000 cl=90.000 g=29.600 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=40.300 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-09 05:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=21.900 21.900/21.900 td=16.000 rh=85.000 cl=90.000 g=39.600 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=44.900 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-09 06:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=22.000 22.000/22.000 td=16.000 rh=85.000 cl=90.000 g=33.100 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=49.400 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-09 07:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=21.900 21.900/21.900 td=16.000 rh=85.000 cl=90.000 g=28.700 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=42.100 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-09 08:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=21.500 21.500/21.500 td=16.000 rh=85.000 cl=90.000 g=30.500 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=46.000 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-09 09:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=20.800 20.800/20.800 td=16.000 rh=85.000 cl=90.000 g=38.200 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=47.300 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-09 10:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=20.000 20.000/20.000 td=16.000 rh=85.000 cl=90.000 g=35.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=48.900 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-09 11:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=19.100 19.100/19.100 td=16.000 rh=85.000 cl=90.000 g=40.800 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=39.400 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-09 12:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=18.000 18.000/18.000 td=16.000 rh=85.000 cl=90.000 g=35.000 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=41.500 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-09 13:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=17.000 17.000/17.000 td=16.000 rh=85.000 cl=90.000 g=39.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=45.800 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-09 14:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=16.000 16.000/16.000 td=16.000 rh=85.000 cl=90.000 g=36.000 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=50.400 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار همرفتی و صاعقه ⚡
++HOURLY 2026-11-09 15:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=15.200 15.200/15.200 td=16.000 rh=85.000 cl=90.000 g=31.700 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=40.300 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-09 16:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.600 14.600/14.600 td=16.000 rh=85.000 cl=90.000 g=29.900 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=48.700 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-09 17:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.100 14.100/14.100 td=16.000 rh=85.000 cl=90.000 g=44.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=49.300 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-09 18:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.000 14.000/14.000 td=16.000 rh=85.000 cl=90.000 g=34.800 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=40.200 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-09 19:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.100 14.100/14.100 td=16.000 rh=85.000 cl=90.000 g=40.600 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=40.300 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-09 20:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.500 14.500/14.500 td=16.000 rh=85.000 cl=90.000 g=38.600 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=45.100 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-09 21:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=15.100 15.100/15.100 td=16.000 rh=85.000 cl=90.000 g=42.600 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=49.400 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-09 22:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=16.000 16.000/16.000 td=16.000 rh=85.000 cl=90.000 g=41.300 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=41.800 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-09 23:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=16.900 16.900/16.900 td=16.000 rh=85.000 cl=90.000 g=34.800 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=49.500 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++H1 00:30 تا 00:30 src=🇪🇺 مدل اروپایی ECMWF pA=90.000 pP=80.000 a50=0.000 a90=0.130 t=18.000 18.000/18.000 td=16.000 rh=85.000 cl=90.000 g=27.100 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=40.700 پتانسیل رگبار همرفتی ⚡ v=false conf=41 [ECMWF IFS,DWD ICON,دیدبانی صفی‌آباد (SYNOP)] بدون بارش قابل‌توجه
++H3 00:30 تا 02:30 src=🇪🇺 مدل اروپایی ECMWF pA=92.300 pP=84.700 a50=1.600 a90=3.920 t=20.000 18.000/20.000 td=16.000 rh=85.000 cl=90.000 g=40.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=62.700 پتانسیل رگبار همرفتی ⚡ v=false conf=41 [ECMWF IFS,DWD ICON,دیدبانی صفی‌آباد (SYNOP)] بارش باران 🌧️
++H6 00:30 تا 05:30 src=🇪🇺 مدل اروپایی ECMWF pA=100.000 pP=88.000 a50=6.390 a90=9.030 t=21.900 18.000/21.900 td=16.000 rh=85.000 cl=90.000 g=40.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=72.300 پتانسیل رگبار همرفتی ⚡ v=false conf=41 [ECMWF IFS,DWD ICON,دیدبانی صفی‌آباد (SYNOP)] بارش باران 🌧️
++H12 00:30 تا 11:30 src=🇪🇺 مدل اروپایی ECMWF pA=100.000 pP=88.000 a50=6.930 a90=9.120 t=22.000 18.000/22.000 td=16.000 rh=85.000 cl=90.000 g=44.000 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=72.300 پتانسیل رگبار همرفتی ⚡ v=false conf=41 [ECMWF IFS,DWD ICON,دیدبانی صفی‌آباد (SYNOP)] بارش باران 🌧️
++H24 00:30 تا 23:30 src=🇪🇺 مدل اروپایی ECMWF pA=100.000 pP=88.000 a50=6.930 a90=9.120 t=22.000 14.000/22.000 td=16.000 rh=85.000 cl=90.000 g=44.000 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=72.300 پتانسیل رگبار همرفتی ⚡ v=false conf=41 [ECMWF IFS,DWD ICON,دیدبانی صفی‌آباد (SYNOP)] بارش باران 🌧️
++=== B dry+emptyRadar+synopDry
++verdict=GREEN | در دایرهٔ ۲۰ کیلومتری شمس‌آباد بارشی دیده نمی‌شود و مدل‌ها برای ۱۲ ساعت آینده بارش قابل‌توجهی نشان نمی‌دهند. | مبنا: رادار و دیدبانی صفی‌آباد و مدل‌های پیش‌بینی.
++radar=true max=-1 wet=0.000 cells=0 first=null | رادار: در تصویر آخر، لکهٔ بارشی در دایرهٔ ۲۰ کیلومتری دیده نمی‌شود. (تصویر رادار 5 دقیقه پیش)
++neigh=0/17 models=true
++pattern=2026-11-08 00:30..2026-11-09 23:30 peak=—/0.000 ts=—/11.100 cape=20.000 tot=0.000/0.000 maxP=2.100 gust=44.000 conv=0 virga=0 | مدل‌ها برای ۲۴ ساعت آینده بارش قابل‌توجهی پیش‌بینی نمی‌کنند.
++HOURLY 2026-11-08 00:30 src=🇪🇺 مدل اروپایی ECMWF pA=2.100 pP=1.300 a50=0.000 a90=0.000 t=18.000 18.000/18.000 td=12.000 rh=45.000 cl=10.000 g=27.100 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [رادار RainViewer,ECMWF IFS,DWD ICON,دیدبانی صفی‌آباد (SYNOP)] بدون بارش
++HOURLY 2026-11-08 01:30 src=🇪🇺 مدل اروپایی ECMWF pA=1.200 pP=0.700 a50=0.000 a90=0.000 t=19.000 19.000/19.000 td=12.000 rh=45.000 cl=10.000 g=39.800 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [رادار RainViewer,ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-08 02:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.500 pP=0.300 a50=0.000 a90=0.000 t=20.000 20.000/20.000 td=12.000 rh=45.000 cl=10.000 g=40.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [رادار RainViewer,ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-08 03:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=20.800 20.800/20.800 td=12.000 rh=45.000 cl=10.000 g=34.700 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-08 04:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=21.500 21.500/21.500 td=12.000 rh=45.000 cl=10.000 g=36.800 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-08 05:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=21.900 21.900/21.900 td=12.000 rh=45.000 cl=10.000 g=26.100 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-08 06:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=22.000 22.000/22.000 td=12.000 rh=45.000 cl=10.000 g=32.900 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-08 07:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=21.900 21.900/21.900 td=12.000 rh=45.000 cl=10.000 g=44.000 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-08 08:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=21.500 21.500/21.500 td=12.000 rh=45.000 cl=10.000 g=35.600 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-08 09:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=20.800 20.800/20.800 td=12.000 rh=45.000 cl=10.000 g=34.200 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-08 10:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=20.000 20.000/20.000 td=12.000 rh=45.000 cl=10.000 g=40.500 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-08 11:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=19.100 19.100/19.100 td=12.000 rh=45.000 cl=10.000 g=42.100 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-08 12:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=18.000 18.000/18.000 td=12.000 rh=45.000 cl=10.000 g=26.700 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-08 13:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=17.000 17.000/17.000 td=12.000 rh=45.000 cl=10.000 g=31.500 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-08 14:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=16.000 16.000/16.000 td=12.000 rh=45.000 cl=10.000 g=28.900 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-08 15:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=15.200 15.200/15.200 td=12.000 rh=45.000 cl=10.000 g=30.900 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-08 16:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.500 14.500/14.500 td=12.000 rh=45.000 cl=10.000 g=35.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-08 17:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.100 14.100/14.100 td=12.000 rh=45.000 cl=10.000 g=36.900 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-08 18:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.000 14.000/14.000 td=12.000 rh=45.000 cl=10.000 g=40.200 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-08 19:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.100 14.100/14.100 td=12.000 rh=45.000 cl=10.000 g=43.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-08 20:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.500 14.500/14.500 td=12.000 rh=45.000 cl=10.000 g=29.200 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-08 21:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=15.200 15.200/15.200 td=12.000 rh=45.000 cl=10.000 g=29.800 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-08 22:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=16.000 16.000/16.000 td=12.000 rh=45.000 cl=10.000 g=25.900 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-08 23:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=16.900 16.900/16.900 td=12.000 rh=45.000 cl=10.000 g=30.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 00:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=18.000 18.000/18.000 td=12.000 rh=45.000 cl=10.000 g=28.800 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 01:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=19.000 19.000/19.000 td=12.000 rh=45.000 cl=10.000 g=36.600 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 02:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=20.000 20.000/20.000 td=12.000 rh=45.000 cl=10.000 g=44.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 03:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=20.800 20.800/20.800 td=12.000 rh=45.000 cl=10.000 g=39.900 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 04:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=21.500 21.500/21.500 td=12.000 rh=45.000 cl=10.000 g=29.600 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 05:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=21.900 21.900/21.900 td=12.000 rh=45.000 cl=10.000 g=39.600 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 06:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=22.000 22.000/22.000 td=12.000 rh=45.000 cl=10.000 g=33.100 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 07:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=21.900 21.900/21.900 td=12.000 rh=45.000 cl=10.000 g=28.700 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 08:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=21.500 21.500/21.500 td=12.000 rh=45.000 cl=10.000 g=30.500 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 09:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=20.800 20.800/20.800 td=12.000 rh=45.000 cl=10.000 g=38.200 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 10:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=20.000 20.000/20.000 td=12.000 rh=45.000 cl=10.000 g=35.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 11:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=19.100 19.100/19.100 td=12.000 rh=45.000 cl=10.000 g=40.800 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 12:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=18.000 18.000/18.000 td=12.000 rh=45.000 cl=10.000 g=35.000 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 13:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=17.000 17.000/17.000 td=12.000 rh=45.000 cl=10.000 g=39.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 14:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=16.000 16.000/16.000 td=12.000 rh=45.000 cl=10.000 g=36.000 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 15:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=15.200 15.200/15.200 td=12.000 rh=45.000 cl=10.000 g=31.700 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 16:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.600 14.600/14.600 td=12.000 rh=45.000 cl=10.000 g=29.900 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 17:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.100 14.100/14.100 td=12.000 rh=45.000 cl=10.000 g=44.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 18:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.000 14.000/14.000 td=12.000 rh=45.000 cl=10.000 g=34.800 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 19:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.100 14.100/14.100 td=12.000 rh=45.000 cl=10.000 g=40.600 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 20:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.500 14.500/14.500 td=12.000 rh=45.000 cl=10.000 g=38.600 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 21:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=15.100 15.100/15.100 td=12.000 rh=45.000 cl=10.000 g=42.600 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 22:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=16.000 16.000/16.000 td=12.000 rh=45.000 cl=10.000 g=41.300 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 23:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=16.900 16.900/16.900 td=12.000 rh=45.000 cl=10.000 g=34.800 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++H1 00:30 تا 00:30 src=🇪🇺 مدل اروپایی ECMWF pA=2.100 pP=1.300 a50=0.000 a90=0.000 t=18.000 18.000/18.000 td=12.000 rh=45.000 cl=10.000 g=27.100 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 بدون بارش قابل‌توجه v=false conf=100 [رادار RainViewer,ECMWF IFS,DWD ICON,دیدبانی صفی‌آباد (SYNOP)] بدون بارش قابل‌توجه
++H3 00:30 تا 02:30 src=🇪🇺 مدل اروپایی ECMWF pA=2.100 pP=1.300 a50=0.000 a90=0.000 t=20.000 18.000/20.000 td=12.000 rh=45.000 cl=10.000 g=40.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 بدون بارش قابل‌توجه v=false conf=100 [رادار RainViewer,ECMWF IFS,DWD ICON,دیدبانی صفی‌آباد (SYNOP)] بدون بارش قابل‌توجه
++H6 00:30 تا 05:30 src=🇪🇺 مدل اروپایی ECMWF pA=2.100 pP=1.300 a50=0.000 a90=0.000 t=21.900 18.000/21.900 td=12.000 rh=45.000 cl=10.000 g=40.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 بدون بارش قابل‌توجه v=false conf=100 [رادار RainViewer,ECMWF IFS,DWD ICON,دیدبانی صفی‌آباد (SYNOP)] بدون بارش قابل‌توجه
++H12 00:30 تا 11:30 src=🇪🇺 مدل اروپایی ECMWF pA=2.100 pP=1.300 a50=0.000 a90=0.000 t=22.000 18.000/22.000 td=12.000 rh=45.000 cl=10.000 g=44.000 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 بدون بارش قابل‌توجه v=false conf=100 [رادار RainViewer,ECMWF IFS,DWD ICON,دیدبانی صفی‌آباد (SYNOP)] بدون بارش قابل‌توجه
++H24 00:30 تا 23:30 src=🇪🇺 مدل اروپایی ECMWF pA=2.100 pP=1.300 a50=0.000 a90=0.000 t=22.000 14.000/22.000 td=12.000 rh=45.000 cl=10.000 g=44.000 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 بدون بارش قابل‌توجه v=false conf=100 [رادار RainViewer,ECMWF IFS,DWD ICON,دیدبانی صفی‌آباد (SYNOP)] بدون بارش قابل‌توجه
++=== C wet+emptyRadar(blind)+noSynop
++verdict=ORANGE | هشدار نارنجی: مدل‌های پیش‌بینی احتمال بارش بالای ۶۰ درصد برای ۶ ساعت آینده محاسبه کرده‌اند. | احتمال وقوع رگبار ناگهانی و تندباد موضعی وجود دارد.
++radar=true max=-1 wet=0.000 cells=0 first=null | رادار: در تصویر آخر، لکهٔ بارشی در دایرهٔ ۲۰ کیلومتری دیده نمی‌شود. (تصویر رادار 5 دقیقه پیش)
++neigh=5/17 models=true
++pattern=2026-11-08 00:30..2026-11-09 23:30 peak=2026-11-08 04:30/1.740 ts=2026-11-08 03:30/72.300 cape=699.500 tot=6.930/9.120 maxP=88.000 gust=44.000 conv=24 virga=0 | جمع‌بندی: هشدار نارنجی: مدل‌های پیش‌بینی احتمال بارش بالای ۶۰ درصد برای ۶ ساعت آینده محاسبه کرده‌اند.
++HOURLY 2026-11-08 00:30 src=🇪🇺 مدل اروپایی ECMWF pA=2.900 pP=2.900 a50=0.000 a90=0.250 t=18.000 18.000/18.000 td=16.000 rh=85.000 cl=90.000 g=27.100 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=40.700 ناپایداری متوسط ☁️ v=false conf=56 [رادار RainViewer,ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-08 01:30 src=🇪🇺 مدل اروپایی ECMWF pA=30.000 pP=30.000 a50=0.080 a90=1.820 t=19.000 19.000/19.000 td=16.000 rh=85.000 cl=90.000 g=39.800 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=54.000 ناپایداری متوسط ☁️ v=false conf=15 [رادار RainViewer,ECMWF IFS,DWD ICON] رگبار همرفتی و صاعقه ⚡
++HOURLY 2026-11-08 02:30 src=🇪🇺 مدل اروپایی ECMWF pA=72.500 pP=72.500 a50=0.720 a90=3.040 t=20.000 20.000/20.000 td=16.000 rh=85.000 cl=90.000 g=40.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=62.700 احتمال رگبار همرفتی و رعدوبرق ⚡ v=false conf=97 [رادار RainViewer,ECMWF IFS,DWD ICON] رگبار همرفتی و صاعقه ⚡
++HOURLY 2026-11-08 03:30 src=🇪🇺 مدل اروپایی ECMWF pA=88.000 pP=88.000 a50=1.600 a90=3.270 t=20.800 20.800/20.800 td=16.000 rh=85.000 cl=90.000 g=34.700 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=72.300 احتمال رگبار همرفتی و رعدوبرق ⚡ v=false conf=96 [ECMWF IFS,DWD ICON] رگبار همرفتی و صاعقه ⚡
++HOURLY 2026-11-08 04:30 src=🇪🇺 مدل اروپایی ECMWF pA=84.700 pP=84.700 a50=1.740 a90=2.970 t=21.500 21.500/21.500 td=16.000 rh=85.000 cl=90.000 g=36.800 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=64.700 احتمال رگبار همرفتی و رعدوبرق ⚡ v=false conf=82 [ECMWF IFS,DWD ICON] رگبار همرفتی و صاعقه ⚡
++HOURLY 2026-11-08 05:30 src=🇪🇺 مدل اروپایی ECMWF pA=86.400 pP=86.400 a50=1.450 a90=2.270 t=21.900 21.900/21.900 td=16.000 rh=85.000 cl=90.000 g=26.100 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=72.300 احتمال رگبار همرفتی و رعدوبرق ⚡ v=false conf=89 [ECMWF IFS,DWD ICON] رگبار همرفتی و صاعقه ⚡
++HOURLY 2026-11-08 06:30 src=🇪🇺 مدل اروپایی ECMWF pA=67.900 pP=67.900 a50=0.840 a90=1.500 t=22.000 22.000/22.000 td=16.000 rh=85.000 cl=90.000 g=32.900 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=61.800 احتمال رگبار همرفتی و رعدوبرق ⚡ v=false conf=0 [ECMWF IFS,DWD ICON] رگبار همرفتی و صاعقه ⚡
++HOURLY 2026-11-08 07:30 src=🇪🇺 مدل اروپایی ECMWF pA=27.300 pP=25.700 a50=0.110 a90=0.570 t=21.900 21.900/21.900 td=16.000 rh=85.000 cl=90.000 g=44.000 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=54.600 ناپایداری متوسط ☁️ v=false conf=14 [ECMWF IFS,DWD ICON] رگبار همرفتی و صاعقه ⚡
++HOURLY 2026-11-08 08:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.030 t=21.500 21.500/21.500 td=16.000 rh=85.000 cl=90.000 g=35.600 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=47.000 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-08 09:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=20.800 20.800/20.800 td=16.000 rh=85.000 cl=90.000 g=34.200 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=50.400 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار همرفتی و صاعقه ⚡
++HOURLY 2026-11-08 10:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=20.000 20.000/20.000 td=16.000 rh=85.000 cl=90.000 g=40.500 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=41.800 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-08 11:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=19.100 19.100/19.100 td=16.000 rh=85.000 cl=90.000 g=42.100 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=45.100 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-08 12:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=18.000 18.000/18.000 td=16.000 rh=85.000 cl=90.000 g=26.700 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=40.900 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-08 13:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=17.000 17.000/17.000 td=16.000 rh=85.000 cl=90.000 g=31.500 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=41.100 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-08 14:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=16.000 16.000/16.000 td=16.000 rh=85.000 cl=90.000 g=28.900 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=42.000 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-08 15:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=15.200 15.200/15.200 td=16.000 rh=85.000 cl=90.000 g=30.900 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=48.800 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-08 16:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.500 14.500/14.500 td=16.000 rh=85.000 cl=90.000 g=35.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=51.000 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار همرفتی و صاعقه ⚡
++HOURLY 2026-11-08 17:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.100 14.100/14.100 td=16.000 rh=85.000 cl=90.000 g=36.900 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=50.300 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار همرفتی و صاعقه ⚡
++HOURLY 2026-11-08 18:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.000 14.000/14.000 td=16.000 rh=85.000 cl=90.000 g=40.200 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=45.200 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-08 19:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.100 14.100/14.100 td=16.000 rh=85.000 cl=90.000 g=43.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=47.900 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-08 20:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.500 14.500/14.500 td=16.000 rh=85.000 cl=90.000 g=29.200 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=40.600 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-08 21:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=15.200 15.200/15.200 td=16.000 rh=85.000 cl=90.000 g=29.800 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=44.700 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-08 22:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=16.000 16.000/16.000 td=16.000 rh=85.000 cl=90.000 g=25.900 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=42.100 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-08 23:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=16.900 16.900/16.900 td=16.000 rh=85.000 cl=90.000 g=30.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=43.800 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-09 00:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=18.000 18.000/18.000 td=16.000 rh=85.000 cl=90.000 g=28.800 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=48.800 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-09 01:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=19.000 19.000/19.000 td=16.000 rh=85.000 cl=90.000 g=36.600 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=45.800 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-09 02:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=20.000 20.000/20.000 td=16.000 rh=85.000 cl=90.000 g=44.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=43.200 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-09 03:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=20.800 20.800/20.800 td=16.000 rh=85.000 cl=90.000 g=39.900 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=46.400 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-09 04:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=21.500 21.500/21.500 td=16.000 rh=85.000 cl=90.000 g=29.600 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=40.300 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-09 05:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=21.900 21.900/21.900 td=16.000 rh=85.000 cl=90.000 g=39.600 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=44.900 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-09 06:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=22.000 22.000/22.000 td=16.000 rh=85.000 cl=90.000 g=33.100 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=49.400 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-09 07:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=21.900 21.900/21.900 td=16.000 rh=85.000 cl=90.000 g=28.700 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=42.100 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-09 08:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=21.500 21.500/21.500 td=16.000 rh=85.000 cl=90.000 g=30.500 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=46.000 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-09 09:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=20.800 20.800/20.800 td=16.000 rh=85.000 cl=90.000 g=38.200 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=47.300 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-09 10:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=20.000 20.000/20.000 td=16.000 rh=85.000 cl=90.000 g=35.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=48.900 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-09 11:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=19.100 19.100/19.100 td=16.000 rh=85.000 cl=90.000 g=40.800 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=39.400 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-09 12:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=18.000 18.000/18.000 td=16.000 rh=85.000 cl=90.000 g=35.000 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=41.500 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-09 13:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=17.000 17.000/17.000 td=16.000 rh=85.000 cl=90.000 g=39.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=45.800 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-09 14:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=16.000 16.000/16.000 td=16.000 rh=85.000 cl=90.000 g=36.000 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=50.400 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار همرفتی و صاعقه ⚡
++HOURLY 2026-11-09 15:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=15.200 15.200/15.200 td=16.000 rh=85.000 cl=90.000 g=31.700 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=40.300 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-09 16:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.600 14.600/14.600 td=16.000 rh=85.000 cl=90.000 g=29.900 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=48.700 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-09 17:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.100 14.100/14.100 td=16.000 rh=85.000 cl=90.000 g=44.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=49.300 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-09 18:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.000 14.000/14.000 td=16.000 rh=85.000 cl=90.000 g=34.800 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=40.200 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-09 19:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.100 14.100/14.100 td=16.000 rh=85.000 cl=90.000 g=40.600 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=40.300 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-09 20:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.500 14.500/14.500 td=16.000 rh=85.000 cl=90.000 g=38.600 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=45.100 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-09 21:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=15.100 15.100/15.100 td=16.000 rh=85.000 cl=90.000 g=42.600 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=49.400 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-09 22:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=16.000 16.000/16.000 td=16.000 rh=85.000 cl=90.000 g=41.300 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=41.800 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++HOURLY 2026-11-09 23:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=16.900 16.900/16.900 td=16.000 rh=85.000 cl=90.000 g=34.800 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=49.500 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] رگبار موضعی پراکنده 🌦️
++H1 00:30 تا 00:30 src=🇪🇺 مدل اروپایی ECMWF pA=2.900 pP=2.900 a50=0.000 a90=0.130 t=18.000 18.000/18.000 td=16.000 rh=85.000 cl=90.000 g=27.100 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=40.700 پتانسیل رگبار همرفتی ⚡ v=false conf=56 [رادار RainViewer,ECMWF IFS,DWD ICON] بدون بارش قابل‌توجه
++H3 00:30 تا 02:30 src=🇪🇺 مدل اروپایی ECMWF pA=92.300 pP=72.500 a50=1.600 a90=3.920 t=20.000 18.000/20.000 td=16.000 rh=85.000 cl=90.000 g=40.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=62.700 پتانسیل رگبار همرفتی ⚡ v=false conf=56 [رادار RainViewer,ECMWF IFS,DWD ICON] بارش باران 🌧️
++H6 00:30 تا 05:30 src=🇪🇺 مدل اروپایی ECMWF pA=100.000 pP=88.000 a50=6.390 a90=9.030 t=21.900 18.000/21.900 td=16.000 rh=85.000 cl=90.000 g=40.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=72.300 پتانسیل رگبار همرفتی ⚡ v=false conf=56 [رادار RainViewer,ECMWF IFS,DWD ICON] بارش باران 🌧️
++H12 00:30 تا 11:30 src=🇪🇺 مدل اروپایی ECMWF pA=100.000 pP=88.000 a50=6.930 a90=9.120 t=22.000 18.000/22.000 td=16.000 rh=85.000 cl=90.000 g=44.000 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=72.300 پتانسیل رگبار همرفتی ⚡ v=false conf=56 [رادار RainViewer,ECMWF IFS,DWD ICON] بارش باران 🌧️
++H24 00:30 تا 23:30 src=🇪🇺 مدل اروپایی ECMWF pA=100.000 pP=88.000 a50=6.930 a90=9.120 t=22.000 14.000/22.000 td=16.000 rh=85.000 cl=90.000 g=44.000 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=72.300 پتانسیل رگبار همرفتی ⚡ v=false conf=56 [رادار RainViewer,ECMWF IFS,DWD ICON] بارش باران 🌧️
++=== D wet+rainOverhead+userRain
++verdict=ORANGE | هشدار نارنجی: بارش در محل شما (گزارش خودتان: باران، 10 دقیقه پیش). | احتمال وقوع رگبار ناگهانی و تندباد موضعی وجود دارد.
++radar=true max=28 wet=0.160 cells=1 first=null | رادار: لکه بارشی با قدرت 28 dBZ داخل دایره ۲۰km شمس‌آباد رصد شد. (تصویر رادار 5 دقیقه پیش)
++neigh=5/17 models=true
++pattern=2026-11-08 00:30..2026-11-09 23:30 peak=2026-11-08 04:30/1.740 ts=2026-11-08 03:30/72.300 cape=699.500 tot=6.930/9.120 maxP=88.000 gust=44.000 conv=24 virga=0 | جمع‌بندی: هشدار نارنجی: بارش در محل شما (گزارش خودتان: باران، 10 دقیقه پیش).
++HOURLY 2026-11-08 00:30 src=📡 رادار زنده pA=70.800 pP=70.800 a50=1.360 a90=2.050 t=18.000 18.000/18.000 td=16.000 rh=85.000 cl=90.000 g=27.100 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=40.700 ناپایداری متوسط ☁️ v=false conf=56 [رادار RainViewer,ECMWF IFS,DWD ICON] بارش در رادار 📡
++HOURLY 2026-11-08 01:30 src=📡 رادار زنده pA=48.000 pP=48.000 a50=0.130 a90=1.820 t=19.000 19.000/19.000 td=16.000 rh=85.000 cl=90.000 g=39.800 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=54.000 ناپایداری متوسط ☁️ v=false conf=15 [رادار RainViewer,ECMWF IFS,DWD ICON] بارش در رادار 📡
++HOURLY 2026-11-08 02:30 src=📡 رادار زنده pA=84.700 pP=84.700 a50=0.850 a90=3.040 t=20.000 20.000/20.000 td=16.000 rh=85.000 cl=90.000 g=40.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=62.700 احتمال رگبار همرفتی و رعدوبرق ⚡ v=false conf=97 [رادار RainViewer,ECMWF IFS,DWD ICON] بارش در رادار 📡
++HOURLY 2026-11-08 03:30 src=🇪🇺 مدل اروپایی ECMWF pA=88.000 pP=88.000 a50=1.600 a90=3.270 t=20.800 20.800/20.800 td=16.000 rh=85.000 cl=90.000 g=34.700 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=72.300 احتمال رگبار همرفتی و رعدوبرق ⚡ v=false conf=96 [ECMWF IFS,DWD ICON] بارش در رادار 📡
++HOURLY 2026-11-08 04:30 src=🇪🇺 مدل اروپایی ECMWF pA=84.700 pP=84.700 a50=1.740 a90=2.970 t=21.500 21.500/21.500 td=16.000 rh=85.000 cl=90.000 g=36.800 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=64.700 احتمال رگبار همرفتی و رعدوبرق ⚡ v=false conf=82 [ECMWF IFS,DWD ICON] بارش در رادار 📡
++HOURLY 2026-11-08 05:30 src=🇪🇺 مدل اروپایی ECMWF pA=86.400 pP=86.400 a50=1.450 a90=2.270 t=21.900 21.900/21.900 td=16.000 rh=85.000 cl=90.000 g=26.100 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=72.300 احتمال رگبار همرفتی و رعدوبرق ⚡ v=false conf=89 [ECMWF IFS,DWD ICON] بارش در رادار 📡
++HOURLY 2026-11-08 06:30 src=🇪🇺 مدل اروپایی ECMWF pA=67.900 pP=67.900 a50=0.840 a90=1.500 t=22.000 22.000/22.000 td=16.000 rh=85.000 cl=90.000 g=32.900 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=61.800 احتمال رگبار همرفتی و رعدوبرق ⚡ v=false conf=0 [ECMWF IFS,DWD ICON] بارش در رادار 📡
++HOURLY 2026-11-08 07:30 src=🇪🇺 مدل اروپایی ECMWF pA=27.300 pP=25.700 a50=0.110 a90=0.570 t=21.900 21.900/21.900 td=16.000 rh=85.000 cl=90.000 g=44.000 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=54.600 ناپایداری متوسط ☁️ v=false conf=14 [ECMWF IFS,DWD ICON] بارش در رادار 📡
++HOURLY 2026-11-08 08:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.030 t=21.500 21.500/21.500 td=16.000 rh=85.000 cl=90.000 g=35.600 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=47.000 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] بارش در رادار 📡
++HOURLY 2026-11-08 09:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=20.800 20.800/20.800 td=16.000 rh=85.000 cl=90.000 g=34.200 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=50.400 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] بارش در رادار 📡
++HOURLY 2026-11-08 10:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=20.000 20.000/20.000 td=16.000 rh=85.000 cl=90.000 g=40.500 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=41.800 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] بارش در رادار 📡
++HOURLY 2026-11-08 11:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=19.100 19.100/19.100 td=16.000 rh=85.000 cl=90.000 g=42.100 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=45.100 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] بارش در رادار 📡
++HOURLY 2026-11-08 12:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=18.000 18.000/18.000 td=16.000 rh=85.000 cl=90.000 g=26.700 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=40.900 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] بارش در رادار 📡
++HOURLY 2026-11-08 13:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=17.000 17.000/17.000 td=16.000 rh=85.000 cl=90.000 g=31.500 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=41.100 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] بارش در رادار 📡
++HOURLY 2026-11-08 14:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=16.000 16.000/16.000 td=16.000 rh=85.000 cl=90.000 g=28.900 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=42.000 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] بارش در رادار 📡
++HOURLY 2026-11-08 15:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=15.200 15.200/15.200 td=16.000 rh=85.000 cl=90.000 g=30.900 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=48.800 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] بارش در رادار 📡
++HOURLY 2026-11-08 16:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.500 14.500/14.500 td=16.000 rh=85.000 cl=90.000 g=35.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=51.000 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] بارش در رادار 📡
++HOURLY 2026-11-08 17:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.100 14.100/14.100 td=16.000 rh=85.000 cl=90.000 g=36.900 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=50.300 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] بارش در رادار 📡
++HOURLY 2026-11-08 18:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.000 14.000/14.000 td=16.000 rh=85.000 cl=90.000 g=40.200 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=45.200 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] بارش در رادار 📡
++HOURLY 2026-11-08 19:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.100 14.100/14.100 td=16.000 rh=85.000 cl=90.000 g=43.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=47.900 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] بارش در رادار 📡
++HOURLY 2026-11-08 20:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.500 14.500/14.500 td=16.000 rh=85.000 cl=90.000 g=29.200 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=40.600 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] بارش در رادار 📡
++HOURLY 2026-11-08 21:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=15.200 15.200/15.200 td=16.000 rh=85.000 cl=90.000 g=29.800 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=44.700 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] بارش در رادار 📡
++HOURLY 2026-11-08 22:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=16.000 16.000/16.000 td=16.000 rh=85.000 cl=90.000 g=25.900 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=42.100 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] بارش در رادار 📡
++HOURLY 2026-11-08 23:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=16.900 16.900/16.900 td=16.000 rh=85.000 cl=90.000 g=30.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=43.800 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] بارش در رادار 📡
++HOURLY 2026-11-09 00:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=18.000 18.000/18.000 td=16.000 rh=85.000 cl=90.000 g=28.800 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=48.800 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] بارش در رادار 📡
++HOURLY 2026-11-09 01:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=19.000 19.000/19.000 td=16.000 rh=85.000 cl=90.000 g=36.600 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=45.800 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] بارش در رادار 📡
++HOURLY 2026-11-09 02:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=20.000 20.000/20.000 td=16.000 rh=85.000 cl=90.000 g=44.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=43.200 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] بارش در رادار 📡
++HOURLY 2026-11-09 03:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=20.800 20.800/20.800 td=16.000 rh=85.000 cl=90.000 g=39.900 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=46.400 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] بارش در رادار 📡
++HOURLY 2026-11-09 04:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=21.500 21.500/21.500 td=16.000 rh=85.000 cl=90.000 g=29.600 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=40.300 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] بارش در رادار 📡
++HOURLY 2026-11-09 05:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=21.900 21.900/21.900 td=16.000 rh=85.000 cl=90.000 g=39.600 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=44.900 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] بارش در رادار 📡
++HOURLY 2026-11-09 06:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=22.000 22.000/22.000 td=16.000 rh=85.000 cl=90.000 g=33.100 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=49.400 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] بارش در رادار 📡
++HOURLY 2026-11-09 07:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=21.900 21.900/21.900 td=16.000 rh=85.000 cl=90.000 g=28.700 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=42.100 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] بارش در رادار 📡
++HOURLY 2026-11-09 08:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=21.500 21.500/21.500 td=16.000 rh=85.000 cl=90.000 g=30.500 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=46.000 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] بارش در رادار 📡
++HOURLY 2026-11-09 09:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=20.800 20.800/20.800 td=16.000 rh=85.000 cl=90.000 g=38.200 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=47.300 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] بارش در رادار 📡
++HOURLY 2026-11-09 10:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=20.000 20.000/20.000 td=16.000 rh=85.000 cl=90.000 g=35.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=48.900 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] بارش در رادار 📡
++HOURLY 2026-11-09 11:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=19.100 19.100/19.100 td=16.000 rh=85.000 cl=90.000 g=40.800 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=39.400 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] بارش در رادار 📡
++HOURLY 2026-11-09 12:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=18.000 18.000/18.000 td=16.000 rh=85.000 cl=90.000 g=35.000 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=41.500 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] بارش در رادار 📡
++HOURLY 2026-11-09 13:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=17.000 17.000/17.000 td=16.000 rh=85.000 cl=90.000 g=39.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=45.800 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] بارش در رادار 📡
++HOURLY 2026-11-09 14:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=16.000 16.000/16.000 td=16.000 rh=85.000 cl=90.000 g=36.000 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=50.400 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] بارش در رادار 📡
++HOURLY 2026-11-09 15:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=15.200 15.200/15.200 td=16.000 rh=85.000 cl=90.000 g=31.700 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=40.300 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] بارش در رادار 📡
++HOURLY 2026-11-09 16:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.600 14.600/14.600 td=16.000 rh=85.000 cl=90.000 g=29.900 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=48.700 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] بارش در رادار 📡
++HOURLY 2026-11-09 17:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.100 14.100/14.100 td=16.000 rh=85.000 cl=90.000 g=44.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=49.300 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] بارش در رادار 📡
++HOURLY 2026-11-09 18:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.000 14.000/14.000 td=16.000 rh=85.000 cl=90.000 g=34.800 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=40.200 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] بارش در رادار 📡
++HOURLY 2026-11-09 19:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.100 14.100/14.100 td=16.000 rh=85.000 cl=90.000 g=40.600 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=40.300 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] بارش در رادار 📡
++HOURLY 2026-11-09 20:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.500 14.500/14.500 td=16.000 rh=85.000 cl=90.000 g=38.600 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=45.100 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] بارش در رادار 📡
++HOURLY 2026-11-09 21:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=15.100 15.100/15.100 td=16.000 rh=85.000 cl=90.000 g=42.600 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=49.400 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] بارش در رادار 📡
++HOURLY 2026-11-09 22:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=16.000 16.000/16.000 td=16.000 rh=85.000 cl=90.000 g=41.300 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=41.800 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] بارش در رادار 📡
++HOURLY 2026-11-09 23:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=16.900 16.900/16.900 td=16.000 rh=85.000 cl=90.000 g=34.800 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=49.500 ناپایداری متوسط ☁️ v=false conf=100 [ECMWF IFS,DWD ICON] بارش در رادار 📡
++H1 00:30 تا 00:30 src=📡 رادار زنده pA=70.800 pP=70.800 a50=0.000 a90=1.360 t=18.000 18.000/18.000 td=16.000 rh=85.000 cl=90.000 g=27.100 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=40.700 پتانسیل رگبار همرفتی ⚡ v=false conf=56 [رادار RainViewer,ECMWF IFS,DWD ICON] بدون بارش قابل‌توجه
++H3 00:30 تا 02:30 src=📡 رادار زنده pA=92.300 pP=84.700 a50=1.600 a90=3.920 t=20.000 18.000/20.000 td=16.000 rh=85.000 cl=90.000 g=40.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=62.700 پتانسیل رگبار همرفتی ⚡ v=false conf=56 [رادار RainViewer,ECMWF IFS,DWD ICON] بارش باران 🌧️
++H6 00:30 تا 05:30 src=📡 رادار زنده pA=100.000 pP=88.000 a50=6.390 a90=9.030 t=21.900 18.000/21.900 td=16.000 rh=85.000 cl=90.000 g=40.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=72.300 پتانسیل رگبار همرفتی ⚡ v=false conf=56 [رادار RainViewer,ECMWF IFS,DWD ICON] بارش باران 🌧️
++H12 00:30 تا 11:30 src=📡 رادار زنده pA=100.000 pP=88.000 a50=6.930 a90=9.120 t=22.000 18.000/22.000 td=16.000 rh=85.000 cl=90.000 g=44.000 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=72.300 پتانسیل رگبار همرفتی ⚡ v=false conf=56 [رادار RainViewer,ECMWF IFS,DWD ICON] بارش باران 🌧️
++H24 00:30 تا 23:30 src=📡 رادار زنده pA=100.000 pP=88.000 a50=6.930 a90=9.120 t=22.000 14.000/22.000 td=16.000 rh=85.000 cl=90.000 g=44.000 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=72.300 پتانسیل رگبار همرفتی ⚡ v=false conf=56 [رادار RainViewer,ECMWF IFS,DWD ICON] بارش باران 🌧️
++=== E dry+noRadar+noSynop
++verdict=UNKNOWN | وضعیت زنده نامشخص است: رادار، دیدبانی صفی‌آباد در دسترس نیست. | پیش‌بینی مدل‌ها برای ۱۲ ساعت آینده نشانهٔ بارش قابل‌توجهی ندارد، اما مشاهدهٔ زنده‌ای برای تأیید نیست.
++radar=false max=-1 wet=0.000 cells=0 first=null | داده‌های راداری در دسترس نیست
++neigh=0/17 models=true
++pattern=2026-11-08 00:30..2026-11-09 23:30 peak=—/0.000 ts=—/11.100 cape=20.000 tot=0.000/0.000 maxP=0.000 gust=44.000 conv=0 virga=0 | مدل‌ها برای ۲۴ ساعت آینده بارش قابل‌توجهی پیش‌بینی نمی‌کنند.
++HOURLY 2026-11-08 00:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=18.000 18.000/18.000 td=12.000 rh=45.000 cl=10.000 g=27.100 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-08 01:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=19.000 19.000/19.000 td=12.000 rh=45.000 cl=10.000 g=39.800 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-08 02:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=20.000 20.000/20.000 td=12.000 rh=45.000 cl=10.000 g=40.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-08 03:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=20.800 20.800/20.800 td=12.000 rh=45.000 cl=10.000 g=34.700 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-08 04:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=21.500 21.500/21.500 td=12.000 rh=45.000 cl=10.000 g=36.800 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-08 05:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=21.900 21.900/21.900 td=12.000 rh=45.000 cl=10.000 g=26.100 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-08 06:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=22.000 22.000/22.000 td=12.000 rh=45.000 cl=10.000 g=32.900 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-08 07:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=21.900 21.900/21.900 td=12.000 rh=45.000 cl=10.000 g=44.000 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-08 08:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=21.500 21.500/21.500 td=12.000 rh=45.000 cl=10.000 g=35.600 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-08 09:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=20.800 20.800/20.800 td=12.000 rh=45.000 cl=10.000 g=34.200 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-08 10:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=20.000 20.000/20.000 td=12.000 rh=45.000 cl=10.000 g=40.500 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-08 11:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=19.100 19.100/19.100 td=12.000 rh=45.000 cl=10.000 g=42.100 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-08 12:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=18.000 18.000/18.000 td=12.000 rh=45.000 cl=10.000 g=26.700 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-08 13:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=17.000 17.000/17.000 td=12.000 rh=45.000 cl=10.000 g=31.500 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-08 14:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=16.000 16.000/16.000 td=12.000 rh=45.000 cl=10.000 g=28.900 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-08 15:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=15.200 15.200/15.200 td=12.000 rh=45.000 cl=10.000 g=30.900 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-08 16:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.500 14.500/14.500 td=12.000 rh=45.000 cl=10.000 g=35.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-08 17:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.100 14.100/14.100 td=12.000 rh=45.000 cl=10.000 g=36.900 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-08 18:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.000 14.000/14.000 td=12.000 rh=45.000 cl=10.000 g=40.200 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-08 19:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.100 14.100/14.100 td=12.000 rh=45.000 cl=10.000 g=43.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-08 20:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.500 14.500/14.500 td=12.000 rh=45.000 cl=10.000 g=29.200 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-08 21:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=15.200 15.200/15.200 td=12.000 rh=45.000 cl=10.000 g=29.800 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-08 22:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=16.000 16.000/16.000 td=12.000 rh=45.000 cl=10.000 g=25.900 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-08 23:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=16.900 16.900/16.900 td=12.000 rh=45.000 cl=10.000 g=30.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 00:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=18.000 18.000/18.000 td=12.000 rh=45.000 cl=10.000 g=28.800 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 01:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=19.000 19.000/19.000 td=12.000 rh=45.000 cl=10.000 g=36.600 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 02:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=20.000 20.000/20.000 td=12.000 rh=45.000 cl=10.000 g=44.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 03:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=20.800 20.800/20.800 td=12.000 rh=45.000 cl=10.000 g=39.900 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 04:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=21.500 21.500/21.500 td=12.000 rh=45.000 cl=10.000 g=29.600 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 05:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=21.900 21.900/21.900 td=12.000 rh=45.000 cl=10.000 g=39.600 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 06:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=22.000 22.000/22.000 td=12.000 rh=45.000 cl=10.000 g=33.100 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 07:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=21.900 21.900/21.900 td=12.000 rh=45.000 cl=10.000 g=28.700 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 08:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=21.500 21.500/21.500 td=12.000 rh=45.000 cl=10.000 g=30.500 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 09:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=20.800 20.800/20.800 td=12.000 rh=45.000 cl=10.000 g=38.200 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 10:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=20.000 20.000/20.000 td=12.000 rh=45.000 cl=10.000 g=35.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 11:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=19.100 19.100/19.100 td=12.000 rh=45.000 cl=10.000 g=40.800 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 12:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=18.000 18.000/18.000 td=12.000 rh=45.000 cl=10.000 g=35.000 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 13:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=17.000 17.000/17.000 td=12.000 rh=45.000 cl=10.000 g=39.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 14:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=16.000 16.000/16.000 td=12.000 rh=45.000 cl=10.000 g=36.000 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 15:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=15.200 15.200/15.200 td=12.000 rh=45.000 cl=10.000 g=31.700 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 16:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.600 14.600/14.600 td=12.000 rh=45.000 cl=10.000 g=29.900 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 17:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.100 14.100/14.100 td=12.000 rh=45.000 cl=10.000 g=44.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 18:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.000 14.000/14.000 td=12.000 rh=45.000 cl=10.000 g=34.800 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 19:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.100 14.100/14.100 td=12.000 rh=45.000 cl=10.000 g=40.600 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 20:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=14.500 14.500/14.500 td=12.000 rh=45.000 cl=10.000 g=38.600 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 21:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=15.100 15.100/15.100 td=12.000 rh=45.000 cl=10.000 g=42.600 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 22:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=16.000 16.000/16.000 td=12.000 rh=45.000 cl=10.000 g=41.300 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++HOURLY 2026-11-09 23:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=16.900 16.900/16.900 td=12.000 rh=45.000 cl=10.000 g=34.800 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 پایدار ☀️ v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش
++H1 00:30 تا 00:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=18.000 18.000/18.000 td=12.000 rh=45.000 cl=10.000 g=27.100 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 بدون بارش قابل‌توجه v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش قابل‌توجه
++H3 00:30 تا 02:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=20.000 18.000/20.000 td=12.000 rh=45.000 cl=10.000 g=40.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 بدون بارش قابل‌توجه v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش قابل‌توجه
++H6 00:30 تا 05:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=21.900 18.000/21.900 td=12.000 rh=45.000 cl=10.000 g=40.400 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 بدون بارش قابل‌توجه v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش قابل‌توجه
++H12 00:30 تا 11:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=22.000 18.000/22.000 td=12.000 rh=45.000 cl=10.000 g=44.000 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 بدون بارش قابل‌توجه v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش قابل‌توجه
++H24 00:30 تا 23:30 src=🇪🇺 مدل اروپایی ECMWF pA=0.000 pP=0.000 a50=0.000 a90=0.000 t=22.000 14.000/22.000 td=12.000 rh=45.000 cl=10.000 g=44.000 ws=15.000 wd=240.000 غرب‌جنوب‌غرب cs=11.100 بدون بارش قابل‌توجه v=false conf=100 [ECMWF IFS,DWD ICON] بدون بارش قابل‌توجه

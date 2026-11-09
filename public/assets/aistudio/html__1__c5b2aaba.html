@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+
+<html dir="rtl" lang="fa"><head><meta charset="utf-8"/><meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" name="viewport"/><meta content="mobile_tab" name="shell-type"/><link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=SansSerif:wght@100..900&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/><style>@layer base{html,body{width:100vw;margin:0;padding:0;background-color:#091327;color:#d9e2ff;}body{overscroll-behavior:none;-webkit-tap-highlight-color:transparent;}.pb-safe{padding-bottom:env(safe-area-inset-bottom,0px);}.pt-safe{padding-top:env(safe-area-inset-top,0px);}main>:first-child{margin-top:0!important;}main>:last-child{margin-bottom:0!important;}}::-webkit-scrollbar{display:none;}</style><script src="https://cdn.tailwindcss.com"></script><script id="tailwind-config">tailwind.config = { darkMode: "class", theme: { extend: { "colors": { "on-tertiary": "#003825", "on-surface-variant": "#bdc8d1", "secondary-container": "#e3aa00", "primary-fixed-dim": "#7bd0ff", "on-error-container": "#ffdad6", "error": "#ffb4ab", "surface-container": "#161f34", "on-primary-container": "#004965", "surface-variant": "#2c344b", "inverse-on-surface": "#273046", "surface-tint": "#7bd0ff", "tertiary-container": "#22c990", "primary-container": "#38bdf8", "secondary-fixed": "#ffdf9f", "on-secondary": "#402d00", "secondary": "#ffc640", "inverse-surface": "#d9e2ff", "surface-dim": "#091327", "primary-fixed": "#c4e7ff", "on-secondary-fixed": "#261a00", "background": "#091327", "surface-container-highest": "#2c344b", "on-primary-fixed-variant": "#004c69", "surface-container-high": "#212a3f", "primary": "#8ed5ff", "secondary-fixed-dim": "#f9bd22", "on-primary-fixed": "#001e2c", "tertiary-fixed-dim": "#45dfa4", "tertiary": "#4ee6aa", "tertiary-fixed": "#68fcbf", "surface-bright": "#30394f", "on-tertiary-container": "#004e35", "inverse-primary": "#00668a", "on-error": "#690005", "on-secondary-fixed-variant": "#5c4300", "outline-variant": "#3e484f", "on-tertiary-fixed-variant": "#005137", "outline": "#87929a", "on-tertiary-fixed": "#002114", "on-primary": "#00354a", "surface-container-low": "#121b30", "surface-container-lowest": "#050d22", "on-secondary-container": "#5a4100", "on-background": "#d9e2ff", "error-container": "#93000a", "surface": "#091327", "on-surface": "#d9e2ff" }, "borderRadius": { "DEFAULT": "0.25rem", "lg": "0.5rem", "xl": "0.75rem", "full": "9999px" }, "spacing": { "space-2xl": "24px", "space-xs": "4px", "space-lg": "16px", "margin": "16px", "space-sm": "8px", "gutter": "14px", "space-md": "12px", "space-xl": "20px" }, "fontFamily": { "display-lg": ["SansSerif"], "caption-tiny": ["SansSerif"], "headline-small": ["SansSerif"], "title-medium": ["SansSerif"], "title-small": ["SansSerif"], "body-medium": ["SansSerif"], "label-small": ["SansSerif"], "label-medium": ["SansSerif"], "body-small": ["SansSerif"] }, "fontSize": { "display-lg": ["28px", { "lineHeight": "36px", "letterSpacing": "-0.02em", "fontWeight": "800" }], "caption-tiny": ["9px", { "lineHeight": "12px", "letterSpacing": "0.01em", "fontWeight": "500" }], "headline-small": ["20px", { "lineHeight": "28px", "letterSpacing": "-0.01em", "fontWeight": "700" }], "title-medium": ["16px", { "lineHeight": "24px", "letterSpacing": "0", "fontWeight": "600" }], "title-small": ["14px", { "lineHeight": "20px", "letterSpacing": "0", "fontWeight": "600" }], "body-medium": ["14px", { "lineHeight": "20px", "letterSpacing": "0", "fontWeight": "400" }], "label-small": ["10px", { "lineHeight": "14px", "letterSpacing": "0.02em", "fontWeight": "500" }], "label-medium": ["12px", { "lineHeight": "16px", "letterSpacing": "0.02em", "fontWeight": "500" }], "body-small": ["12px", { "lineHeight": "18px", "letterSpacing": "0", "fontWeight": "400" }] } } } };</script><style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head><body class="bg-surface text-on-surface flex flex-col min-h-screen selection:bg-primary-container selection:text-on-primary-container"><header class="fixed top-0 w-full z-50 bg-surface/85 backdrop-blur-xl shadow-[0_1px_8px_rgba(0,0,0,0.25)]"><div class="h-16 px-margin flex items-center justify-between gap-space-sm"><div class="flex items-center gap-space-sm min-w-0 flex-1"><div class="w-11 h-11 rounded-xl bg-surface-container-high flex items-center justify-center text-primary shrink-0"><span class="material-symbols-outlined text-[24px]">sensors</span></div><div class="flex flex-col min-w-0"><div class="flex items-center gap-space-xs"><span class="font-title-small text-title-small text-on-surface truncate">شمس‌آباد، دزفول</span><span class="material-symbols-outlined text-primary text-[18px]">expand_more</span></div><span class="font-caption-tiny text-caption-tiny text-on-surface-variant truncate">شعاع عملیاتی ۲۰ کیلومتر • پایش آنلاین</span></div></div><div class="flex items-center gap-space-xs shrink-0"><button aria-label="به‌روزرسانی داده‌ها" class="w-11 h-11 rounded-full flex items-center justify-center text-on-surface-variant hover:text-primary hover:bg-surface-container transition-colors active:scale-95"><span class="material-symbols-outlined text-[20px]">sync</span></button><button aria-label="جستجوی موقعیت" class="w-11 h-11 rounded-full flex items-center justify-center text-on-surface-variant hover:text-primary hover:bg-surface-container transition-colors active:scale-95"><span class="material-symbols-outlined text-[20px]">search</span></button><div class="w-8 h-8 rounded-full bg-primary flex items-center justify-center shrink-0"><span class="material-symbols-outlined text-on-primary text-[18px]">person</span></div></div></div></header><main class="flex flex-col relative w-full pt-16 pb-24 bg-surface min-h-screen"><div class="flex flex-col w-full text-on-surface select-none pb-4">
+<!-- Top Telemetry & Layer Navigation -->
+<div class="px-margin pt-space-xs pb-space-sm flex flex-col gap-space-sm">
+<!-- Sub-bar: Station telemetry & view tools -->
+<div class="flex items-center justify-between gap-space-xs">
+<div class="flex items-center gap-space-xs bg-surface-container-high px-space-md py-1.5 rounded-full shadow-sm">
+<span class="relative flex h-2 w-2">
+<span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-tertiary opacity-75"></span>
+<span class="relative inline-flex rounded-full h-2 w-2 bg-tertiary"></span>
+</span>
+<span class="font-title-small text-title-small text-on-surface">شمس‌آباد، دزفول و حومه</span>
+<span class="font-caption-tiny text-caption-tiny text-on-surface-variant bg-surface-container px-1.5 py-0.5 rounded text-primary">۳۲.۳۱° N , ۴۸.۴۳° E</span>
+</div>
+<div class="flex items-center gap-1.5">
+<button class="w-9 h-9 rounded-full bg-surface-container-high flex items-center justify-center text-on-surface-variant hover:text-primary transition-colors active:scale-95" id="view-mode-btn" title="حالت نقشه">
+<span class="material-symbols-outlined text-[19px]">satellite_alt</span>
+</button>
+<button class="w-9 h-9 rounded-full bg-surface-container-high flex items-center justify-center text-on-surface-variant hover:text-primary transition-colors active:scale-95" id="layer-opts-btn" title="تنظیمات شفافیت لایه‌ها">
+<span class="material-symbols-outlined text-[19px]">layers</span>
+</button>
+<button class="w-9 h-9 rounded-full bg-surface-container-high flex items-center justify-center text-on-surface-variant hover:text-primary transition-colors active:scale-95" id="fullscreen-btn" title="تمام صفحه">
+<span class="material-symbols-outlined text-[19px]">fullscreen</span>
+</button>
+</div>
+</div>
+<!-- Quick Layer Selector Ribbon -->
+<div class="flex items-center gap-2 overflow-x-auto no-scrollbar py-0.5">
+<button class="layer-pill active flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-primary text-on-primary font-label-medium text-label-medium whitespace-nowrap shadow-sm transition-all" data-layer="precip">
+<span class="material-symbols-outlined text-[16px]">rainy</span>
+<span>بارش و ابر</span>
+</button>
+<button class="layer-pill flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-surface-container text-on-surface-variant hover:text-on-surface font-label-medium text-label-medium whitespace-nowrap transition-all" data-layer="wind">
+<span class="material-symbols-outlined text-[16px]">air</span>
+<span>جبهه باد</span>
+</button>
+<button class="layer-pill flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-surface-container text-on-surface-variant hover:text-on-surface font-label-medium text-label-medium whitespace-nowrap transition-all" data-layer="temp">
+<span class="material-symbols-outlined text-[16px]">thermostat</span>
+<span>دما و حرارت</span>
+</button>
+<button class="layer-pill flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-surface-container text-on-surface-variant hover:text-on-surface font-label-medium text-label-medium whitespace-nowrap transition-all" data-layer="storm">
+<span class="material-symbols-outlined text-[16px]">thunderstorm</span>
+<span>رعد و برق</span>
+</button>
+</div>
+</div>
+<!-- Interactive Map Telemetry Viewport -->
+<div class="px-margin">
+<div class="relative w-full aspect-[4/5] rounded-xl overflow-hidden bg-surface-container-lowest shadow-md flex items-center justify-center">
+<!-- Topographic/Night Satellite Base Map Representation -->
+<div class="absolute inset-0 bg-cover bg-center opacity-35 scale-105" data-location="Dezful, Khuzestan, Iran" style="background-image: url('https://lh3.googleusercontent.com/aida-public/AB6AXuBnlRAj4GvsDVshf8XOlrPcWKrQeJ7NcdoQAZrKFTMOiaJIhKdtbAMhf7nRjNZSNkIVCdTBPO0gFYdo3ad-4lpp13OwfDBiZfcAZm2Es58h1er5dQn2Pf7A5W-62RMK_77zIfEqImOjGG0BsCHUYeTX1C37HPC6ZW9rr1Zjue-ePvdALoL-kEKrZlh8J5-F9ztznnbsmw1W8B98xiHxykTHQd_lSLtRHSz6PKlP7tvp')"></div>
+<!-- Vector Contour & Topography Grid Canvas -->
+<svg class="absolute inset-0 w-full h-full pointer-events-none" fill="none" viewbox="0 0 400 500" xmlns="http://www.w3.org/2000/svg">
+<defs>
+<!-- Radar Beam Sweep Gradient -->
+<radialgradient cx="50%" cy="50%" id="radarSweep" r="50%">
+<stop offset="0%" stop-color="#38bdf8" stop-opacity="0.35"></stop>
+<stop offset="60%" stop-color="#38bdf8" stop-opacity="0.08"></stop>
+<stop offset="100%" stop-color="#38bdf8" stop-opacity="0"></stop>
+</radialgradient>
+<!-- Precipitation Heat Blobs -->
+<filter height="140%" id="radarGlow" width="140%" x="-20%" y="-20%">
+<fegaussianblur result="blur" stddeviation="7"></fegaussianblur>
+<fecomposite in="SourceGraphic" in2="blur" operator="over"></fecomposite>
+</filter>
+</defs>
+<!-- Topo Height Contours (Zagros foothills) -->
+<path d="M-20 80 Q100 40 220 70 T420 30" opacity="0.4" stroke="#3e484f" stroke-dasharray="3 3" stroke-width="0.75"></path>
+<path d="M-20 120 Q120 70 240 110 T420 60" opacity="0.35" stroke="#3e484f" stroke-width="0.75"></path>
+<path d="M-20 160 Q90 130 210 150 T420 100" opacity="0.3" stroke="#3e484f" stroke-dasharray="4 2" stroke-width="0.75"></path>
+<!-- Dez River Hydrology line -->
+<path d="M160 0 C175 90 205 150 195 230 C185 300 170 380 185 500" opacity="0.45" stroke="#7bd0ff" stroke-dasharray="6 2" stroke-linecap="round" stroke-width="1.8"></path>
+<!-- Range Concentric Distance Rings (Center = Shamsabad ~ x:195, y:235) -->
+<circle cx="195" cy="235" opacity="0.3" r="55" stroke="#87929a" stroke-dasharray="3 3" stroke-width="0.8"></circle>
+<circle cx="195" cy="235" opacity="0.3" r="115" stroke="#87929a" stroke-dasharray="3 3" stroke-width="0.8"></circle>
+<circle cx="195" cy="235" opacity="0.25" r="175" stroke="#87929a" stroke-dasharray="3 3" stroke-width="0.8"></circle>
+<!-- Bearing Crosshairs -->
+<line opacity="0.2" stroke="#87929a" stroke-width="0.5" x1="195" x2="195" y1="50" y2="420"></line>
+<line opacity="0.2" stroke="#87929a" stroke-width="0.5" x1="20" x2="370" y1="235" y2="235"></line>
+<!-- Range Ring Metric Labels -->
+<text fill="#87929a" font-family="SansSerif" font-size="8" opacity="0.75" x="254" y="232">۱۰ km</text>
+<text fill="#87929a" font-family="SansSerif" font-size="8" opacity="0.75" x="314" y="232">۲۵ km</text>
+<text fill="#87929a" font-family="SansSerif" font-size="8" opacity="0.75" x="374" y="232">۵۰ km</text>
+<!-- Simulated Radar Precipitation Echoes (Doppler Layer) -->
+<g filter="url(#radarGlow)" id="radar-echo-layer" opacity="0.85">
+<!-- Outer low-reflectivity cyan/teal drizzle zone (NW to SE drift) -->
+<path d="M60 70 C100 50 160 80 180 120 C195 150 170 190 120 200 C80 210 40 180 30 140 C20 100 35 80 60 70 Z" fill="#38bdf8" opacity="0.45"></path>
+<path d="M190 130 C240 110 290 140 280 180 C270 210 230 220 200 200 C180 185 170 150 190 130 Z" fill="#22c990" opacity="0.4"></path>
+<!-- Moderate reflectivity green/yellow cores -->
+<path d="M80 90 C110 75 145 95 155 125 C160 145 145 170 115 175 C85 180 60 160 55 135 C50 110 65 95 80 90 Z" fill="#ffc640" opacity="0.6"></path>
+<!-- Heavy storm core orange/red hail cell (NW approaching) -->
+<circle cx="105" cy="125" fill="#ffb4ab" opacity="0.85" r="24"></circle>
+<circle cx="102" cy="122" fill="#93000a" opacity="0.9" r="14"></circle>
+<!-- Additional isolated shower cluster near Karun plain -->
+<ellipse cx="270" cy="330" fill="#38bdf8" opacity="0.35" rx="35" ry="22"></ellipse>
+<circle cx="275" cy="330" fill="#22c990" opacity="0.45" r="10"></circle>
+</g>
+<!-- Convective Storm Motion Velocity Vectors (Wind Streaks) -->
+<g opacity="0.85" stroke="#ffc640" stroke-linecap="round" stroke-width="1.5">
+<line marker-end="url(#arrow)" x1="85" x2="115" y1="95" y2="120"></line>
+<line x1="120" x2="150" y1="130" y2="155"></line>
+<line x1="60" x2="90" y1="130" y2="155"></line>
+<line x1="240" x2="265" y1="310" y2="335"></line>
+</g>
+<!-- Geographic Landmarks / Settlements -->
+<g fill="#d9e2ff" font-family="SansSerif" font-size="9" font-weight="600" opacity="0.9">
+<!-- Andimeshk -->
+<circle cx="150" cy="95" fill="#d9e2ff" r="2.5"></circle>
+<text text-anchor="start" x="156" y="99">اندیمشک</text>
+<!-- Dezful City -->
+<circle cx="178" cy="145" fill="#d9e2ff" r="3"></circle>
+<text text-anchor="start" x="185" y="149">دزفول</text>
+<!-- Shamsabad Station Center Point -->
+<circle cx="195" cy="235" fill="#38bdf8" r="5"></circle>
+<circle cx="195" cy="235" fill="#091327" r="2"></circle>
+<text fill="#8ed5ff" font-weight="700" text-anchor="middle" x="195" y="255">شمس‌آباد (مرکز)</text>
+<!-- Safiabad Agricultural Center -->
+<circle cx="215" cy="210" fill="#bdc8d1" r="2"></circle>
+<text fill="#bdc8d1" font-size="8" text-anchor="start" x="221" y="213">صفی‌آباد</text>
+<!-- Shush -->
+<circle cx="110" cy="300" fill="#d9e2ff" r="2.5"></circle>
+<text text-anchor="start" x="116" y="304">شوش</text>
+<!-- Shushtar -->
+<circle cx="310" cy="275" fill="#d9e2ff" r="2.5"></circle>
+<text text-anchor="start" x="316" y="279">شوشتر</text>
+<!-- Zagros Foothills label -->
+<text fill="#87929a" font-size="8" font-style="italic" opacity="0.6" x="340" y="70">ارتفاعات زاگرس</text>
+</g>
+<!-- Lightning Strike Indicators -->
+<g fill="#ffdf9f">
+<!-- Flash 1 -->
+<path d="M100 105 L96 112 L101 112 L97 120 L104 111 L100 111 Z"></path>
+<!-- Flash 2 -->
+<path d="M118 135 L114 142 L119 142 L115 150 L122 141 L118 141 Z"></path>
+</g>
+</svg>
+<!-- Floating Map Overlays -->
+<!-- 1. Precipitation Intensity Scale Bar (dBZ) -->
+<div class="absolute top-3 left-3 bg-surface-container-high/90 backdrop-blur-md px-2.5 py-1.5 rounded-lg flex flex-col gap-1 shadow-sm max-w-[170px]">
+<div class="flex items-center justify-between text-on-surface-variant font-caption-tiny text-caption-tiny">
+<span>شدت بازتابش (dBZ)</span>
+<span class="text-primary font-mono">۵ - ۶۵</span>
+</div>
+<!-- Gradient bar -->
+<div class="w-full h-2 rounded-full bg-gradient-to-r from-[#38bdf8] via-[#22c990] via-[#ffc640] via-[#ffb4ab] to-[#93000a]"></div>
+<div class="flex items-center justify-between font-caption-tiny text-[8px] text-on-surface-variant">
+<span>سبک</span>
+<span>متوسط</span>
+<span>شدید</span>
+<span>طوفان/تگرگ</span>
+</div>
+</div>
+<!-- 2. Live Telemetry Badge (Center Marker Card) -->
+<div class="absolute top-3 right-3 bg-surface-container-high/90 backdrop-blur-md px-2.5 py-1.5 rounded-lg flex items-center gap-2 shadow-sm">
+<span class="material-symbols-outlined text-secondary text-[16px]">radar</span>
+<div class="flex flex-col text-right">
+<span class="font-caption-tiny text-caption-tiny text-on-surface-variant">بازتابش در سایت</span>
+<span class="font-label-medium text-label-medium text-on-surface font-semibold">۲۴ dBZ • ابری</span>
+</div>
+</div>
+<!-- 3. Compass Indicator -->
+<div class="absolute bottom-3 left-3 w-8 h-8 rounded-full bg-surface-container-high/80 backdrop-blur flex items-center justify-center text-primary shadow-sm">
+<span class="font-label-small text-label-small font-bold">N</span>
+</div>
+</div>
+</div>
+<!-- Real-Time Radar Playback & Timeline Scrubber Dock -->
+<div class="px-margin mt-space-sm">
+<div class="w-full bg-surface-container-high rounded-xl p-space-md flex flex-col gap-2.5 shadow-sm">
+<!-- Top info line: Timestamp, status and animation speed -->
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-2">
+<button aria-label="پخش رادار" class="w-9 h-9 rounded-full bg-primary text-on-primary flex items-center justify-center transition-transform active:scale-90 shadow-sm" id="playback-btn">
+<span class="material-symbols-outlined text-[20px]" id="playback-icon" style="font-variation-settings: 'FILL' 1;">play_arrow</span>
+</button>
+<div class="flex flex-col">
+<div class="flex items-center gap-1.5">
+<span class="font-title-small text-title-small text-on-surface" id="radar-time-label">امروز، ۱۴:۴۵</span>
+<span class="bg-tertiary-container text-on-tertiary-container font-caption-tiny text-caption-tiny px-1.5 py-0.5 rounded-full font-bold">زنده</span>
+</div>
+<span class="font-caption-tiny text-caption-tiny text-on-surface-variant">وضوح زمانی: ۵ دقیقه‌ای</span>
+</div>
+</div>
+<div class="flex items-center gap-1.5">
+<button class="bg-surface-container px-2.5 py-1 rounded-full text-on-surface font-label-small text-label-small hover:bg-surface-variant transition-colors" id="speed-toggle">
+            سرعت: <span class="text-primary font-bold" id="speed-val">1x</span>
+</button>
+<div class="w-7 h-7 rounded-full bg-surface-container flex items-center justify-center text-on-surface-variant" title="تکرار چرخه">
+<span class="material-symbols-outlined text-[15px]">repeat</span>
+</div>
+</div>
+</div>
+<!-- Scrubber Timeline Progress Bar -->
+<div class="flex flex-col gap-1 w-full pt-1">
+<div class="relative w-full flex items-center h-4 cursor-pointer" id="scrubber-track">
+<!-- Base rail -->
+<div class="w-full h-1.5 bg-surface-variant rounded-full overflow-hidden flex">
+<!-- Past 2 hours segment -->
+<div class="w-4/6 h-full bg-primary-container"></div>
+<!-- Forecast next 1 hour segment -->
+<div class="w-2/6 h-full bg-surface-container-highest"></div>
+</div>
+<!-- Scrubber Thumb -->
+<div class="absolute right-[33.3%] w-4 h-4 bg-primary rounded-full shadow-[0_0_8px_rgba(123,208,255,0.7)] border-2 border-surface-container-high transition-all" id="scrubber-thumb"></div>
+</div>
+<!-- Timeline Tick Labels (RTL layout) -->
+<div class="flex items-center justify-between font-caption-tiny text-caption-tiny text-on-surface-variant px-0.5">
+<span>۲ ساعت پیش</span>
+<span>۱ ساعت پیش</span>
+<span>۳۰- دقیقه</span>
+<span class="text-primary font-bold">اکنون (زنده)</span>
+<span>۳۰+ دقیقه</span>
+<span>۱+ ساعت آینده</span>
+</div>
+</div>
+</div>
+</div>
+<!-- Nowcasting Intelligence & Atmospheric Alert Card -->
+<div class="px-margin mt-space-sm">
+<div class="w-full bg-surface-container rounded-xl p-space-md flex flex-col gap-space-sm shadow-sm">
+<!-- Section Header -->
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-2">
+<div class="w-8 h-8 rounded-lg bg-surface-container-highest flex items-center justify-center text-secondary">
+<span class="material-symbols-outlined text-[18px]">bolt</span>
+</div>
+<div class="flex flex-col">
+<span class="font-title-small text-title-small text-on-surface">سامانه هوشمند پایش لحظه‌ای (Nowcasting)</span>
+<span class="font-caption-tiny text-caption-tiny text-on-surface-variant">تحلیل خودکار همرفت جوی در حومه شمس‌آباد</span>
+</div>
+</div>
+<span class="font-label-small text-label-small bg-secondary-container text-on-secondary-container px-2 py-0.5 rounded-full font-semibold">هشدار زرد</span>
+</div>
+<!-- Quick Metrics Grid -->
+<div class="grid grid-cols-3 gap-2 pt-1">
+<!-- Cell Distance -->
+<div class="bg-surface-container-high p-2.5 rounded-lg flex flex-col gap-0.5">
+<span class="font-caption-tiny text-caption-tiny text-on-surface-variant">موقعیت توده</span>
+<span class="font-title-small text-title-small text-on-surface">۳۵ km</span>
+<span class="font-caption-tiny text-caption-tiny text-primary">شمال‌غربی دزفول</span>
+</div>
+<!-- Precipitation Probability -->
+<div class="bg-surface-container-high p-2.5 rounded-lg flex flex-col gap-0.5">
+<span class="font-caption-tiny text-caption-tiny text-on-surface-variant">احتمال رگبار</span>
+<span class="font-title-small text-title-small text-tertiary">۷۵٪</span>
+<span class="font-caption-tiny text-caption-tiny text-on-surface-variant">در ۴۰ دقیقه آینده</span>
+</div>
+<!-- Velocity & Vector -->
+<div class="bg-surface-container-high p-2.5 rounded-lg flex flex-col gap-0.5">
+<span class="font-caption-tiny text-caption-tiny text-on-surface-variant">سرعت جبهه</span>
+<span class="font-title-small text-title-small text-on-surface">۲۸ km/h</span>
+<span class="font-caption-tiny text-caption-tiny text-secondary">به سمت جنوب‌شرق</span>
+</div>
+</div>
+<!-- Insight Advisory -->
+<div class="flex items-start gap-2 bg-surface-container-low p-2.5 rounded-lg mt-0.5">
+<span class="material-symbols-outlined text-primary text-[18px] shrink-0 mt-0.5">info</span>
+<p class="font-body-small text-body-small text-on-surface-variant leading-relaxed">
+          سامانه بارشی تندری تشکیل‌شده بر فراز کوه‌پایه‌های زاگرس و اندیمشک، هم‌اکنون با گسترش شاخه‌های فعال به سمت دشت مرکزی شمس‌آباد در جریان است. کشاورزان و واحدهای زراعی اقدامات احتیاطی در برابر وزش تندباد لحظه‌ای را رعایت فرمایند.
+        </p>
+</div>
+</div>
+</div>
+<!-- Educational Scientific Disclosure Accordion -->
+<div class="px-margin mt-space-sm mb-2">
+<div class="w-full bg-surface-container-low rounded-xl p-space-md flex items-center justify-between cursor-pointer hover:bg-surface-container transition-colors" id="radar-info-toggle">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-outline text-[18px]">science</span>
+<span class="font-label-medium text-label-medium text-on-surface-variant">درباره رادار جوی داپلر دزفول و نحوه خوانش داده‌ها</span>
+</div>
+<span class="material-symbols-outlined text-outline text-[18px]" id="info-chevron">expand_more</span>
+</div>
+<div class="hidden mt-1 p-space-md bg-surface-container-low rounded-xl text-on-surface-variant font-body-small text-body-small leading-relaxed" id="radar-info-content">
+      داده‌های این صفحه از ترکیب تلفیقی تصاویر رادار داپلر باند C شبکه هواشناسی کشور و خروجی مدل عددی WRF با قدرت تفکیک مکانی ۱ کیلومتر استخراج گردیده است. رنگ‌های زرد تا زرشکی نشانگر تشدید نرخ بارش قطرات درشت، ناپایداری‌های همرفتی و خطر بارش تگرگ در سطح زمین می‌باشند.
+    </div>
+</div>
+</div>
+<script>
+  (function () {
+    // 1. Highlight the current active tab in shell navigation
+    try {
+      const navLinks = document.querySelectorAll('nav a');
+      navLinks.forEach(link => {
+        const path = link.getAttribute('data-path');
+        if (path === 'radar') {
+          link.classList.remove('text-on-surface-variant');
+          link.classList.add('text-primary', 'font-title-small');
+          const icon = link.querySelector('.material-symbols-outlined');
+          if (icon) {
+            icon.style.fontVariationSettings = "'FILL' 1";
+          }
+        } else {
+          link.classList.remove('text-primary', 'font-title-small');
+          link.classList.add('text-on-surface-variant');
+        }
+      });
+    } catch (e) {
+      // Shell nav fallback
+    }
+
+    // 2. Layer Toggle Micro-interactions
+    const layerPills = document.querySelectorAll('.layer-pill');
+    layerPills.forEach(pill => {
+      pill.addEventListener('click', () => {
+        layerPills.forEach(p => {
+          p.classList.remove('bg-primary', 'text-on-primary', 'active');
+          p.classList.add('bg-surface-container', 'text-on-surface-variant');
+        });
+        pill.classList.remove('bg-surface-container', 'text-on-surface-variant');
+        pill.classList.add('bg-primary', 'text-on-primary', 'active');
+      });
+    });
+
+    // 3. Playback Controller Simulation
+    const playbackBtn = document.getElementById('playback-btn');
+    const playbackIcon = document.getElementById('playback-icon');
+    const timeLabel = document.getElementById('radar-time-label');
+    const scrubberThumb = document.getElementById('scrubber-thumb');
+    let isPlaying = false;
+    let playInterval = null;
+    let step = 0;
+
+    const frames = [
+      { time: 'امروز، ۱۲:۴۵', pos: '85%' },
+      { time: 'امروز، ۱۳:۱۵', pos: '70%' },
+      { time: 'امروز، ۱۳:۴۵', pos: '55%' },
+      { time: 'امروز، ۱۴:۱۵', pos: '42%' },
+      { time: 'امروز، ۱۴:۴۵', pos: '33.3%' }, // live now
+      { time: 'امروز، ۱۵:۱۵', pos: '20%' },
+      { time: 'امروز، ۱۵:۴۵', pos: '8%' }
+    ];
+
+    function updateFrame(index) {
+      const f = frames[index];
+      if (f) {
+        timeLabel.textContent = f.time;
+        scrubberThumb.style.right = f.pos;
+      }
+    }
+
+    playbackBtn.addEventListener('click', () => {
+      isPlaying = !isPlaying;
+      if (isPlaying) {
+        playbackIcon.textContent = 'pause';
+        playInterval = setInterval(() => {
+          step = (step + 1) % frames.length;
+          updateFrame(step);
+        }, 1200);
+      } else {
+        playbackIcon.textContent = 'play_arrow';
+        clearInterval(playInterval);
+      }
+    });
+
+    // 4. Speed Toggle
+    const speedToggle = document.getElementById('speed-toggle');
+    const speedVal = document.getElementById('speed-val');
+    let speed = 1;
+    speedToggle.addEventListener('click', () => {
+      speed = speed === 1 ? 2 : 1;
+      speedVal.textContent = speed + 'x';
+    });
+
+    // 5. Scientific Accordion
+    const infoToggle = document.getElementById('radar-info-toggle');
+    const infoContent = document.getElementById('radar-info-content');
+    const infoChevron = document.getElementById('info-chevron');
+    if (infoToggle && infoContent && infoChevron) {
+      infoToggle.addEventListener('click', () => {
+        const isHidden = infoContent.classList.contains('hidden');
+        if (isHidden) {
+          infoContent.classList.remove('hidden');
+          infoChevron.textContent = 'expand_less';
+        } else {
+          infoContent.classList.add('hidden');
+          infoChevron.textContent = 'expand_more';
+        }
+      });
+    }
+  })();
+</script></main><nav class="fixed bottom-0 w-full z-50 pb-safe bg-surface-container-low/90 backdrop-blur-xl shadow-[0_-2px_12px_rgba(0,0,0,0.35)]" data-active-classes="text-primary font-title-small"><div class="flex justify-around items-center h-16 px-space-xs max-w-lg mx-auto"><a class="flex flex-col items-center justify-center min-w-[64px] h-12 gap-0.5 text-on-surface-variant transition-colors hover:text-on-surface" data-path="today" href="#"><span class="material-symbols-outlined text-[22px]">air</span><span class="font-label-small text-label-small">امروز</span></a><a class="flex flex-col items-center justify-center min-w-[64px] h-12 gap-0.5 text-on-surface-variant transition-colors hover:text-on-surface" data-path="forecast" href="#"><span class="material-symbols-outlined text-[22px]">calendar_month</span><span class="font-label-small text-label-small">پیش‌بینی</span></a><a class="flex flex-col items-center justify-center min-w-[64px] h-12 gap-0.5 text-on-surface-variant transition-colors hover:text-on-surface" data-path="radar" href="#"><span class="material-symbols-outlined text-[22px]">radar</span><span class="font-label-small text-label-small">رادار جوی</span></a><a class="flex flex-col items-center justify-center min-w-[64px] h-12 gap-0.5 text-on-surface-variant transition-colors hover:text-on-surface" data-path="stations" href="#"><span class="material-symbols-outlined text-[22px]">location_city</span><span class="font-label-small text-label-small">ایستگاه‌ها</span></a></div></nav></body></html>

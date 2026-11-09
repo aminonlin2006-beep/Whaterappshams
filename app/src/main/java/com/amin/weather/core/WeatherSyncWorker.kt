@@ -26,6 +26,11 @@ class WeatherSyncWorker(
             val dashboard = repo.refreshForecast().getOrNull()
                 ?: return@withContext (if (runAttemptCount < 3) Result.retry() else Result.success())
 
+            // دادهٔ کهنه (اتصال برقرار نشد) نباید اعلان بسازد؛ دوباره تلاش کن
+            if (dashboard.isStale) {
+                return@withContext (if (runAttemptCount < 3) Result.retry() else Result.success())
+            }
+
             val alertEval = manager.evaluateDashboard(dashboard, settings)
             if (alertEval.shouldNotify) {
                 manager.sendNotificationWithCooldown(alertEval, force = false)
